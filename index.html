@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>CNC FORMS</title>
+<title>Planejamento CNC — Torre de Manutenção</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
@@ -11140,6 +11140,29 @@ async function fbBootstrap() {
     }
   }
 
+  // ─── Recarrega dados em memória após download ───
+  // Recarrega allData (variável global usada pelo CNC)
+  try {
+    if (typeof loadLocalData === 'function') {
+      const loaded = loadLocalData();
+      if (loaded && window.allData !== undefined) {
+        // Substitui o conteúdo do array allData (mantém a referência)
+        allData.length = 0;
+        loaded.forEach(item => allData.push(item));
+        console.log('[FB] allData recarregado:', allData.length, 'itens');
+      }
+    }
+    // Recarrega Sol (solicitações)
+    if (window.Sol && Sol.refresh) {
+      try { Sol.refresh(); } catch(e){}
+    }
+  } catch (e) {
+    console.warn('[FB] erro recarregar memória:', e);
+  }
+
+  // Força re-render da view ativa
+  setTimeout(() => _fbRefreshActiveView(), 200);
+
   // Configura listeners em tempo real
   // Quando outro usuário muda /backlog, atualiza localmente
   Object.keys(mergeStrategy).forEach(fbPath => {
@@ -11148,6 +11171,14 @@ async function fbBootstrap() {
       if (val === null || val === undefined) return;
       const origSet = Object.getPrototypeOf(localStorage).setItem;
       origSet.call(localStorage, lsKey, JSON.stringify(val));
+      // Recarrega memória se for /backlog (allData)
+      if (fbPath === '/backlog' && typeof loadLocalData === 'function' && window.allData !== undefined) {
+        const loaded = loadLocalData();
+        if (loaded) {
+          allData.length = 0;
+          loaded.forEach(item => allData.push(item));
+        }
+      }
       // Re-render se a aba ativa for relevante
       _fbRefreshActiveView();
     });
