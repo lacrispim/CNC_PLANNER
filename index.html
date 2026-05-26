@@ -7802,16 +7802,35 @@ const FB = (function() {
   }
 
   /* ─── Status visual no topbar ─── */
+  let _lastError = null;
+  let _lastSyncAt = null;
+  let _stats = { reads: 0, writes: 0, failedWrites: 0, failedReads: 0 };
   function setStatus(state, msg) {
     const el = document.getElementById('fbStatus');
     if (!el) return;
     el.className = 'fb-status fb-' + state;
-    el.title = msg || '';
     const icons = { ok: '🟢', conn: '🔄', off: '⚫', err: '🔴' };
     el.textContent = icons[state] || '⚫';
+    // Tooltip detalhado — clique no indicador também imprime no console
+    const lines = [msg || ''];
+    if (_lastSyncAt) lines.push('Última sync: ' + new Date(_lastSyncAt).toLocaleTimeString());
+    if (_lastError) lines.push('Erro: ' + _lastError);
+    lines.push('Reads: ' + _stats.reads + ' · Writes: ' + _stats.writes +
+               (_stats.failedReads || _stats.failedWrites
+                  ? ' (falhas: ' + _stats.failedReads + 'R/' + _stats.failedWrites + 'W)'
+                  : ''));
+    el.title = lines.filter(Boolean).join('\n');
   }
+  function reportError(where, err) {
+    _lastError = '[' + where + '] ' + (err && err.message ? err.message : String(err));
+    console.warn('[FB]', _lastError, err);
+    setStatus('err', _lastError);
+    // Toast visual se a função existir
+    try { if (typeof toast === 'function') toast('Sync: ' + _lastError, 'error', 6000); } catch(e){}
+  }
+  function markSync() { _lastSyncAt = Date.now(); }
 
-  /* ─── Salvar dados ───
+  /* ─── Save dados ───
      Caminhos no DB:
        /backlog            ← allData (430 itens)
        /sol_mods           ← edições nas solicitações
@@ -7824,10 +7843,34 @@ const FB = (function() {
       // Salva pra enviar quando voltar online
       return Promise.resolve(false);
     }
-    return db.ref(path).set(value).then(() => true).catch(e => {
-      console.warn('[FB] save erro em', path, e.message);
+    _stats.writes++;
+    return db.ref(path).set(value).then(() => { markSync(); return true; }).catch(e => {
+      _stats.failedWrites++;
+      reportError('save ' + path, e);
       return false;
     });
+  }
+
+  /* ─── Health check: testa permissões reais escrevendo e lendo /_healthz ───
+     Retorna { ok: bool, canRead: bool, canWrite: bool, error: string|null } */
+  async function healthCheck() {
+    if (!db || !connected) return { ok: false, canRead: false, canWrite: false, error: 'Não conectado' };
+    const testPath = '/_healthz';
+    const testVal = { t: Date.now(), client: 'cncplanner' };
+    let canWrite = false, canRead = false, error = null;
+    try {
+      await db.ref(testPath).set(testVal);
+      canWrite = true;
+    } catch (e) {
+      error = 'write: ' + (e.message || e.code || String(e));
+    }
+    try {
+      const snap = await db.ref(testPath).once('value');
+      canRead = snap.val() !== null;
+    } catch (e) {
+      error = (error ? error + ' | ' : '') + 'read: ' + (e.message || e.code || String(e));
+    }
+    return { ok: canWrite && canRead, canWrite, canRead, error };
   }
 
   /* Save com debounce — evita escrita em massa quando o usuário digita rápido */
@@ -7848,8 +7891,13 @@ const FB = (function() {
     }
     const handler = db.ref(path).on('value', snap => {
       if (_suppressListeners) return;
+      _stats.reads++;
+      markSync();
       const val = snap.val();
       try { callback(val); } catch (e) { console.warn('[FB] listener erro:', e); }
+    }, err => {
+      _stats.failedReads++;
+      reportError('listen ' + path, err);
     });
     listeners[path] = handler;
   }
@@ -7859,11 +7907,15 @@ const FB = (function() {
   /* ─── Carregar tudo de uma vez ─── */
   function loadAll() {
     if (!db) return Promise.resolve(null);
-    return db.ref('/').once('value').then(snap => snap.val() || {});
+    _stats.reads++;
+    return db.ref('/').once('value').then(snap => { markSync(); return snap.val() || {}; })
+      .catch(e => { _stats.failedReads++; reportError('loadAll', e); return null; });
   }
 
   return { init, save, saveDebounced, listen, suppressListeners, loadAll, setStatus,
-           isConnected: () => connected };
+           healthCheck, reportError,
+           isConnected: () => connected,
+           getStats: () => ({ ..._stats, lastError: _lastError, lastSyncAt: _lastSyncAt }) };
 })();
 
 /* ── Mapeia keys do localStorage → paths no Firebase ── */
@@ -11094,22 +11146,43 @@ window.tbMoreClose = tbMoreClose;
    - Configura listeners em tempo real pra cada caminho
 */
 async function fbBootstrap() {
-  if (!FB.init()) return;
+  try {
+    if (!FB.init()) return;
 
-  // Aguarda conexão estabelecer (até 5s)
-  let tries = 0;
-  while (!FB.isConnected() && tries < 50) {
-    await new Promise(r => setTimeout(r, 100));
-    tries++;
-  }
-  if (!FB.isConnected()) {
-    console.warn('[FB] Não conectou em 5s — seguindo offline');
-    return;
-  }
+    // Aguarda conexão estabelecer (até 5s)
+    let tries = 0;
+    while (!FB.isConnected() && tries < 50) {
+      await new Promise(r => setTimeout(r, 100));
+      tries++;
+    }
+    if (!FB.isConnected()) {
+      console.warn('[FB] Não conectou em 5s — seguindo offline');
+      FB.setStatus('off', 'Sem conexão com Firebase (timeout 5s)');
+      try { if (typeof toast === 'function') toast('Firebase offline — sync entre dispositivos desativado', 'error', 5000); } catch(e){}
+      return;
+    }
 
-  // Carrega dados do servidor
-  const serverData = await FB.loadAll();
-  console.log('[FB] Dados do servidor:', serverData ? Object.keys(serverData) : 'vazio');
+    // ─── Health check: testa se as regras permitem read/write ───
+    const hc = await FB.healthCheck();
+    console.log('[FB] Health check:', hc);
+    if (!hc.ok) {
+      const msg = !hc.canWrite
+        ? 'Firebase bloqueando escrita — verifique as REGRAS do Realtime Database'
+        : !hc.canRead
+          ? 'Firebase bloqueando leitura — verifique as REGRAS do Realtime Database'
+          : 'Firebase com falha — ' + (hc.error || 'erro desconhecido');
+      FB.setStatus('err', msg + (hc.error ? ' (' + hc.error + ')' : ''));
+      try { if (typeof toast === 'function') toast(msg, 'error', 10000); } catch(e){}
+      console.error('[FB] ⚠️ ', msg);
+      console.error('[FB] Vá em https://console.firebase.google.com → ' + FIREBASE_CONFIG.projectId +
+                    ' → Realtime Database → Regras e defina:\n{\n  "rules": {\n    ".read": true,\n    ".write": true\n  }\n}');
+      return;
+    }
+    FB.setStatus('ok', 'Conectado e com permissões OK');
+
+    // Carrega dados do servidor
+    const serverData = await FB.loadAll();
+    console.log('[FB] Dados do servidor:', serverData ? Object.keys(serverData) : 'vazio');
 
   const mergeStrategy = {
     '/backlog':    'cnc_os_data_v1',
@@ -11152,9 +11225,39 @@ async function fbBootstrap() {
         console.log('[FB] allData recarregado:', allData.length, 'itens');
       }
     }
-    // Recarrega Sol (solicitações)
-    if (window.Sol && Sol.refresh) {
-      try { Sol.refresh(); } catch(e){}
+    // Recarrega Sol (solicitações) — aplica sol_mods no `data` em memória
+    if (window.Sol && Sol.getData) {
+      const solData = Sol.getData();
+      const mods = JSON.parse(localStorage.getItem('cnc_sol_mods_v1') || '{}');
+      if (Array.isArray(solData) && mods && typeof mods === 'object') {
+        let applied = 0;
+        solData.forEach(r => {
+          const mod = mods[r.id];
+          if (mod) {
+            r.status = mod.status || 'Pendente';
+            r.files = mod.files || [];
+            r.obs = mod.obs || '';
+            r.materialCompra = mod.materialCompra || '';
+            r.nf = mod.nf || '';
+            r.sapIron = mod.sapIron || '';
+            r.chaveNF = mod.chaveNF || '';
+            r.buyChk = mod.buyChk || {pedido:false, cotado:false, recebido:false};
+            if (mod.cu !== undefined) r.cu = mod.cu;
+            if (mod.cprod !== undefined) r.cprod = mod.cprod;
+            if (mod.savingMonth !== undefined) r._savingMonth = mod.savingMonth;
+            r._promoted = !!mod._promoted;
+            applied++;
+          }
+        });
+        console.log('[FB] sol_mods aplicados:', applied, 'edições');
+        // Propaga pro backlog CNC
+        if (window.syncSolToBacklog) {
+          try { window.syncSolToBacklog(); } catch(e){}
+        }
+      }
+      if (Sol.refresh) {
+        try { Sol.refresh(); } catch(e){}
+      }
     }
   } catch (e) {
     console.warn('[FB] erro recarregar memória:', e);
@@ -11179,12 +11282,43 @@ async function fbBootstrap() {
           loaded.forEach(item => allData.push(item));
         }
       }
+      // Se for /sol_mods, atualiza o `data` em memória do Sol (cada item)
+      if (fbPath === '/sol_mods' && window.Sol && Sol.getData) {
+        const solData = Sol.getData();
+        const mods = val;
+        if (Array.isArray(solData) && mods && typeof mods === 'object') {
+          solData.forEach(r => {
+            const mod = mods[r.id];
+            if (mod) {
+              r.status = mod.status || 'Pendente';
+              r.files = mod.files || [];
+              r.obs = mod.obs || '';
+              r.materialCompra = mod.materialCompra || '';
+              r.nf = mod.nf || '';
+              r.sapIron = mod.sapIron || '';
+              r.chaveNF = mod.chaveNF || '';
+              r.buyChk = mod.buyChk || {pedido:false, cotado:false, recebido:false};
+              if (mod.cu !== undefined) r.cu = mod.cu;
+              if (mod.cprod !== undefined) r.cprod = mod.cprod;
+              if (mod.savingMonth !== undefined) r._savingMonth = mod.savingMonth;
+              r._promoted = !!mod._promoted;
+            }
+          });
+          // Propaga pro backlog CNC também
+          if (window.syncSolToBacklog) {
+            try { window.syncSolToBacklog(); } catch(e){}
+          }
+        }
+      }
       // Re-render se a aba ativa for relevante
       _fbRefreshActiveView();
     });
   });
 
   console.log('[FB] Bootstrap completo. Listeners ativos.');
+  } catch (e) {
+    FB.reportError('bootstrap', e);
+  }
 }
 
 function _fbRefreshActiveView() {
@@ -11217,6 +11351,41 @@ function fbReconnect() {
   }
 }
 window.fbReconnect = fbReconnect;
+
+/* ═══════════════════════════ FIREBASE DEBUG ═══════════════════════════
+   Chame `fbDebug()` no console do navegador (F12) pra ver o estado completo
+   da sincronização: conexão, último erro, contadores de read/write, e
+   um health check ao vivo. */
+window.fbDebug = async function() {
+  const out = {
+    timestamp: new Date().toISOString(),
+    config: { projectId: FIREBASE_CONFIG.projectId, databaseURL: FIREBASE_CONFIG.databaseURL },
+    sdkLoaded: typeof firebase !== 'undefined',
+    connected: FB.isConnected ? FB.isConnected() : false,
+    stats: FB.getStats ? FB.getStats() : null,
+  };
+  console.log('━━━━━━━━ FIREBASE DEBUG ━━━━━━━━');
+  console.log('Project:', out.config.projectId);
+  console.log('SDK carregado:', out.sdkLoaded ? '✅' : '❌');
+  console.log('Conectado:', out.connected ? '✅' : '❌');
+  console.log('Stats:', out.stats);
+  if (out.connected && FB.healthCheck) {
+    console.log('Rodando health check...');
+    const hc = await FB.healthCheck();
+    out.healthCheck = hc;
+    console.log('Health check:', hc.ok ? '✅' : '❌', hc);
+    if (!hc.ok) {
+      console.log('%c⚠️  AS REGRAS DO REALTIME DATABASE ESTÃO BLOQUEANDO O ACESSO',
+                  'color:#d93025;font-weight:bold;font-size:14px');
+      console.log('Vá em: https://console.firebase.google.com/project/' +
+                  out.config.projectId + '/database/' + out.config.projectId +
+                  '-default-rtdb/rules');
+      console.log('E cole:\n{\n  "rules": {\n    ".read": true,\n    ".write": true\n  }\n}');
+    }
+  }
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  return out;
+};
 
 // Inicializa quando DOM pronto
 (function initEntry(){
