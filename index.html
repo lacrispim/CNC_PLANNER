@@ -4341,6 +4341,13 @@ window.syncSolToBacklog = function() {
   const aprovadas = solData.filter(s => s.status === 'Aprovação para compra');
   console.log('[SolBridge] Total Sol:', solData.length, '| Aprovadas:', aprovadas.length, '| Em allData:', allData.length);
 
+  // ─── BACKFILL: itens _fromSol antigos sem _solId — extrai do "req" (formato "SOL-{id}") ───
+  allData.forEach(d => {
+    if (d._fromSol && !d._solId && d.req && d.req.startsWith('SOL-')) {
+      d._solId = d.req.slice(4);
+    }
+  });
+
   // ─── FAXINA: BACKLOG só aceita itens vindos de solicitação ATUAL com status "Aprovação para compra" ───
   // Remove de allData qualquer item que:
   //  • Não foi alocado no calendário (_placed!=true) — itens posicionados ficam intocados
@@ -4353,20 +4360,22 @@ window.syncSolToBacklog = function() {
     const veioDoSol = d._fromSol === true;
     const solIdValido = veioDoSol && d._solId && aprovadaIds.has(String(d._solId));
     if (!veioDoSol) {
-      // Item manual antigo (botão +) ou seed legado: remove do backlog
       console.log('[SolBridge] FAXINA -manual:', d._id, d.req || d.nome);
       allData.splice(i, 1);
       removed++;
     } else if (!solIdValido) {
-      // Veio do Sol mas a solicitação não está mais aprovada (mudou pra outro status, foi excluída, etc)
       console.log('[SolBridge] FAXINA -órfão:', d._id, d.req, '(solicitação não está mais em Aprovação para compra)');
       allData.splice(i, 1);
       removed++;
-      // Reseta _promoted na solicitação correspondente (se ainda existir)
       const s = solData.find(s => String(s.id) === String(d._solId));
       if (s && s._promoted) {
         s._promoted = false;
         if (window.Sol && window.Sol.persistRec) Sol.persistRec(s);
+      }
+    } else {
+      // Item válido — garante status sincronizado com "Aprovação para compra"
+      if (d.status !== 'Aprovação para compra') {
+        d.status = 'Aprovação para compra';
       }
     }
   }
@@ -4404,7 +4413,7 @@ window.syncSolToBacklog = function() {
           area: s.ar || '',
           qtd: parseInt(s.qt, 10) || 1,
           saving: 0,
-          status: 'Fila de produção',
+          status: 'Aprovação para compra',
           data: '',
           _day: '',
           _manual: false,
@@ -4778,7 +4787,7 @@ const COL_FIELDS=[
 ];
 
 /* helpers */
-function sc(s){const v=(s||'').toLowerCase().trim();if(v.includes('fila'))return'f';if(v==='em produção')return'p';if(v.startsWith('encerrado')||v.includes('entregue'))return'e';if(v.includes('declin'))return'd';return'o';}
+function sc(s){const v=(s||'').toLowerCase().trim();if(v.includes('fila'))return'f';if(v.includes('aprovação')||v.includes('aprovacao'))return'f';if(v==='em produção')return'p';if(v.startsWith('encerrado')||v.includes('entregue'))return'e';if(v.includes('declin'))return'd';return'o';}
 function sdot(s){return{f:'#d97706',p:'#2563eb',e:'#10b981',d:'#dc2626',o:'#7c3aed'}[sc(s)]||'#5a6472';}
 function fmtMin(m){if(m==null||m==='')return'—';const v=+m;return isNaN(v)||v===0?'—':v+'m';}
 function toast(msg,type='info',dur=3000){const t=document.createElement('div');t.className='toast '+type;t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),dur);}
