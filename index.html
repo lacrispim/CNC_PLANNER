@@ -4341,6 +4341,36 @@ window.syncSolToBacklog = function() {
   const aprovadas = solData.filter(s => s.status === 'Aprovação para compra');
   console.log('[SolBridge] Total Sol:', solData.length, '| Aprovadas:', aprovadas.length, '| Em allData:', allData.length);
 
+  // ─── FAXINA: BACKLOG só aceita itens vindos de solicitação ATUAL com status "Aprovação para compra" ───
+  // Remove de allData qualquer item que:
+  //  • Não foi alocado no calendário (_placed!=true) — itens posicionados ficam intocados
+  //  • E não tem _fromSol=true (itens manuais antigos), OU
+  //  • Tem _fromSol=true mas a solicitação correspondente NÃO está mais em "Aprovação para compra"
+  const aprovadaIds = new Set(aprovadas.map(s => String(s.id)));
+  for (let i = allData.length - 1; i >= 0; i--) {
+    const d = allData[i];
+    if (d._placed === true) continue;  // protege itens posicionados no calendário
+    const veioDoSol = d._fromSol === true;
+    const solIdValido = veioDoSol && d._solId && aprovadaIds.has(String(d._solId));
+    if (!veioDoSol) {
+      // Item manual antigo (botão +) ou seed legado: remove do backlog
+      console.log('[SolBridge] FAXINA -manual:', d._id, d.req || d.nome);
+      allData.splice(i, 1);
+      removed++;
+    } else if (!solIdValido) {
+      // Veio do Sol mas a solicitação não está mais aprovada (mudou pra outro status, foi excluída, etc)
+      console.log('[SolBridge] FAXINA -órfão:', d._id, d.req, '(solicitação não está mais em Aprovação para compra)');
+      allData.splice(i, 1);
+      removed++;
+      // Reseta _promoted na solicitação correspondente (se ainda existir)
+      const s = solData.find(s => String(s.id) === String(d._solId));
+      if (s && s._promoted) {
+        s._promoted = false;
+        if (window.Sol && window.Sol.persistRec) Sol.persistRec(s);
+      }
+    }
+  }
+
   // Backfill: itens _fromSol antigos sem _siteSent recebem agora, pra aparecerem
   // no backlog do MENSAL sem precisar re-passar pelo SITES.
   allData.forEach(d => {
