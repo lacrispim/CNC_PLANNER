@@ -8934,6 +8934,109 @@ const FB_KEY_MAP = {
 
 
 
+/* ════════════════════ LIMPAR BACKLOG POR URL ════════════════════
+   Lê /backlog direto do Firebase e mantém SOMENTE items que correspondem
+   a solicitações ATUAIS com status "Aprovação para compra".
+   - Disparado por ?cleanBacklog=1 na URL
+   - Itens posicionados no calendário (_placed=true) são preservados
+   - Outros usuários do time veem a mudança via Firebase listener
+*/
+async function _cleanBacklogByUrl() {
+  if (!window.location.search.includes('cleanBacklog=1')) return;
+
+  console.log('[CLEAN BACKLOG URL] 🧹 Detectado ?cleanBacklog=1 — limpando backlog no Firebase...');
+  if (typeof toast === 'function') toast('🧹 Limpando BACKLOG no Firebase…', 'info', 3000);
+
+  // Aguarda Firebase conectar
+  let tries = 0;
+  while ((typeof FB === 'undefined' || !FB.isConnected || !FB.isConnected()) && tries < 60) {
+    await new Promise(r => setTimeout(r, 200));
+    tries++;
+  }
+  if (typeof firebase === 'undefined' || !firebase.apps || !firebase.apps.length) {
+    console.warn('[CLEAN BACKLOG URL] Firebase indisponível — abortando');
+    alert('Firebase não conectou. Verifique a conexão e tente novamente.');
+    return;
+  }
+
+  try {
+    const db = firebase.database();
+    // 1) Lê /backlog, /sol_new e /sol_mods do Firebase em paralelo
+    const [backlogSnap, solNewSnap, solModsSnap] = await Promise.all([
+      db.ref('/backlog').once('value'),
+      db.ref('/sol_new').once('value'),
+      db.ref('/sol_mods').once('value')
+    ]);
+
+    const fbBacklog = backlogSnap.val() || [];
+    const solNew = solNewSnap.val() || [];
+    const solMods = solModsSnap.val() || {};
+
+    // 2) Monta set de IDs com status "Aprovação para compra"
+    // Status efetivo = sol_mods[id].status || sol_new (procura) || RAW_DATA (não tem aqui, mas o code local tem)
+    const aprovadasIds = new Set();
+    // Solicitações criadas via "Nova solicitação" (sol_new)
+    const solNewArr = Array.isArray(solNew) ? solNew : Object.values(solNew);
+    solNewArr.forEach(s => {
+      if (!s || !s.id) return;
+      const effectiveStatus = (solMods[s.id] && solMods[s.id].status) || s.status;
+      if (effectiveStatus === 'Aprovação para compra') aprovadasIds.add(String(s.id));
+    });
+    // Solicitações do RAW_DATA (acessa via data local — Sol já deve ter populado)
+    if (typeof Sol !== 'undefined' && Sol.getData) {
+      try {
+        Sol.getData().forEach(s => {
+          if (s.status === 'Aprovação para compra') aprovadasIds.add(String(s.id));
+        });
+      } catch(e) { console.warn('[CLEAN BACKLOG URL] erro Sol.getData:', e); }
+    }
+    console.log('[CLEAN BACKLOG URL] Solicitações em "Aprovação para compra":', aprovadasIds.size);
+
+    // 3) Filtra o backlog
+    const backlogArr = Array.isArray(fbBacklog) ? fbBacklog : Object.values(fbBacklog);
+    const kept = [], removed = [];
+    backlogArr.forEach(d => {
+      if (!d) return;
+      // Preserva itens já posicionados no calendário
+      if (d._placed === true) { kept.push(d); return; }
+      // Backfill _solId
+      if (d._fromSol && !d._solId && d.req && d.req.startsWith('SOL-')) {
+        d._solId = d.req.slice(4);
+      }
+      const veioDoSol = d._fromSol === true;
+      const solIdValido = veioDoSol && d._solId && aprovadasIds.has(String(d._solId));
+      if (veioDoSol && solIdValido) {
+        // Item válido — força status correto
+        d.status = 'Aprovação para compra';
+        kept.push(d);
+      } else {
+        removed.push({ _id: d._id, req: d.req, motivo: !veioDoSol ? 'manual' : 'órfão' });
+      }
+    });
+    console.log('[CLEAN BACKLOG URL] Mantidos:', kept.length, '| Removidos:', removed.length);
+    console.table(removed.slice(0, 20));
+
+    // 4) Reescreve /backlog no Firebase
+    await db.ref('/backlog').set(kept);
+    console.log('[CLEAN BACKLOG URL] ✓ /backlog atualizado no Firebase');
+
+    // 5) Limpa localStorage local (será re-populado pelo listener)
+    try { localStorage.removeItem('cnc_os_data_v1'); } catch(e) {}
+
+    if (typeof toast === 'function') {
+      toast(`✓ BACKLOG limpo: ${kept.length} mantidos · ${removed.length} removidos`, 'success', 5000);
+    }
+    // Redireciona pra URL limpa
+    const cleanUrl = window.location.pathname + window.location.hash;
+    setTimeout(() => { window.location.href = cleanUrl; }, 2500);
+  } catch (e) {
+    console.error('[CLEAN BACKLOG URL] Erro:', e);
+    alert('Erro ao limpar BACKLOG: ' + e.message);
+  }
+}
+// Executa no carregamento se a URL tem ?cleanBacklog=1
+setTimeout(_cleanBacklogByUrl, 800);
+
 /* ════════════════════ RESET POR URL (manual, sem flag) ════════════════════
    Apaga TUDO quando a URL contém ?reset=1. Caso contrário, não faz nada.
    - Sem flag (pra contornar flags antigas que possam ter ficado travadas)
@@ -10565,59 +10668,57 @@ function _matPresetOptions(){
   return all.map(m => `<option value="${m.replace(/"/g,'&quot;')}">`).join('');
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// _hydrate(r, mods, isNew): centraliza a leitura dos modificadores persistidos.
+// Substitui os 4 lookups paralelos que existiam (estado inicial × Firebase
+// sync × SOL_NEW × RAW_DATA), eliminando risco de drift entre eles.
+//
+// SEMPRE QUE _persistRec ganhar um campo novo, adicione AQUI também — e
+// pronto, os 4 caminhos de leitura passam a funcionar automaticamente.
+// ═══════════════════════════════════════════════════════════════════════════
+function _hydrate(r, mods, isNew) {
+  const m = mods[r.id] || {};
+  const out = {
+    ...r,
+    status:         m.status || r.status || 'Pendente',
+    _promoted:      !!m._promoted,
+    files:          Array.isArray(m.files) ? m.files : (r.files || []),
+    buyChk:         m.buyChk || r.buyChk || {pedido:false, cotado:false, recebido:false},
+    buyList:        Array.isArray(m.buyList) ? m.buyList : (Array.isArray(r.buyList) ? r.buyList : []),
+    history:        Array.isArray(m.history) ? m.history : (Array.isArray(r.history) ? r.history : []),
+    obs:            (m.obs !== undefined) ? m.obs : (r.obs || ''),
+    materialCompra: (m.materialCompra !== undefined) ? m.materialCompra : (r.materialCompra || ''),
+    propT:          (m.propT !== undefined) ? m.propT : (r.propT || ''),
+    pedCompra:      (m.pedCompra !== undefined) ? m.pedCompra : (r.pedCompra || ''),
+    pedMat:         (m.pedMat !== undefined) ? m.pedMat : (r.pedMat || ''),
+    nf:             (m.nf !== undefined) ? m.nf : (r.nf || ''),
+    sapIron:        (m.sapIron !== undefined) ? m.sapIron : (r.sapIron || ''),
+    pedidoIron:     (m.pedidoIron !== undefined) ? m.pedidoIron : (r.pedidoIron || ''),
+    chaveNF:        (m.chaveNF !== undefined) ? m.chaveNF : (r.chaveNF || ''),
+    dcm:            (m.dcm !== undefined) ? m.dcm : (r.dcm || ''),
+    dte:            (m.dte !== undefined) ? m.dte : r.dte,
+    dtp:            (m.dtp !== undefined) ? m.dtp : r.dtp,
+    dem:            (m.dem !== undefined) ? m.dem : r.dem,
+    prevForn:       (m.prevForn !== undefined) ? m.prevForn : (r.prevForn || ''),
+    cu:             (m.cu !== undefined) ? m.cu : r.cu,
+    cuCnc:          (m.cuCnc !== undefined) ? m.cuCnc : (r.cuCnc || 0),
+    cprod:          (m.cprod !== undefined) ? m.cprod : (r.cprod || 0),
+    qtReal:         (m.qtReal !== undefined) ? m.qtReal : (r.qtReal || 0),
+    _savingMonth:   m.savingMonth || ''
+  };
+  if (isNew) out._isNew = true;
+  return out;
+}
+
 // Merge base (RAW_DATA) + modificações persistidas + novos registros criados via saveN
 const _mods = _loadMods();
 const _newRecs = _loadNewRecs();
 let data = [
   // Novos registros criados pelo usuário (unshift = aparecem primeiro)
-  ..._newRecs.map(r => ({
-    ...r,
-    status: (_mods[r.id] && _mods[r.id].status) || r.status || 'Pendente',
-    files:  (_mods[r.id] && _mods[r.id].files)  || r.files  || [],
-    obs:    (_mods[r.id] && _mods[r.id].obs)    || r.obs    || '',
-    materialCompra: (_mods[r.id] && _mods[r.id].materialCompra) || r.materialCompra || '',
-    nf:     (_mods[r.id] && _mods[r.id].nf) || r.nf || '',
-    sapIron:(_mods[r.id] && _mods[r.id].sapIron) || r.sapIron || '',
-    pedidoIron:(_mods[r.id] && _mods[r.id].pedidoIron) || r.pedidoIron || '',
-    chaveNF:(_mods[r.id] && _mods[r.id].chaveNF) || r.chaveNF || '',
-    buyChk: (_mods[r.id] && _mods[r.id].buyChk) || {pedido:false, cotado:false, recebido:false},
-    buyList: (_mods[r.id] && Array.isArray(_mods[r.id].buyList)) ? _mods[r.id].buyList : [],
-    cu:     (_mods[r.id] && _mods[r.id].cu !== undefined) ? _mods[r.id].cu : r.cu,
-    cuCnc:  (_mods[r.id] && _mods[r.id].cuCnc !== undefined) ? _mods[r.id].cuCnc : r.cuCnc,
-    cprod:  (_mods[r.id] && _mods[r.id].cprod !== undefined) ? _mods[r.id].cprod : (r.cprod || 0),
-    qtReal: (_mods[r.id] && _mods[r.id].qtReal !== undefined) ? _mods[r.id].qtReal : r.qtReal,
-    history: (_mods[r.id] && Array.isArray(_mods[r.id].history)) ? _mods[r.id].history : (r.history || []),
-    dte:    (_mods[r.id] && _mods[r.id].dte !== undefined) ? _mods[r.id].dte : r.dte,
-    dtp:    (_mods[r.id] && _mods[r.id].dtp !== undefined) ? _mods[r.id].dtp : r.dtp,
-    dem:    (_mods[r.id] && _mods[r.id].dem !== undefined) ? _mods[r.id].dem : r.dem,
-    _savingMonth: (_mods[r.id] && _mods[r.id].savingMonth) || '',
-    _promoted: !!(_mods[r.id] && _mods[r.id]._promoted),
-    _isNew: true
-  })),
+  ..._newRecs.map(r => _hydrate(r, _mods, true)),
   // Base RAW_DATA com mods aplicados por cima
-  ...RAW_DATA.map(r => ({
-    ...r,
-    status: (_mods[r.id] && _mods[r.id].status) || 'Pendente',
-    files:  (_mods[r.id] && _mods[r.id].files)  || [],
-    obs:    (_mods[r.id] && _mods[r.id].obs)    || '',
-    materialCompra: (_mods[r.id] && _mods[r.id].materialCompra) || '',
-    nf:     (_mods[r.id] && _mods[r.id].nf) || '',
-    sapIron:(_mods[r.id] && _mods[r.id].sapIron) || '',
-    pedidoIron:(_mods[r.id] && _mods[r.id].pedidoIron) || '',
-    chaveNF:(_mods[r.id] && _mods[r.id].chaveNF) || '',
-    buyChk: (_mods[r.id] && _mods[r.id].buyChk) || {pedido:false, cotado:false, recebido:false},
-    buyList: (_mods[r.id] && Array.isArray(_mods[r.id].buyList)) ? _mods[r.id].buyList : [],
-    cu:     (_mods[r.id] && _mods[r.id].cu !== undefined) ? _mods[r.id].cu : r.cu,
-    cuCnc:  (_mods[r.id] && _mods[r.id].cuCnc !== undefined) ? _mods[r.id].cuCnc : (r.cuCnc || 0),
-    cprod:  (_mods[r.id] && _mods[r.id].cprod !== undefined) ? _mods[r.id].cprod : 0,
-    qtReal: (_mods[r.id] && _mods[r.id].qtReal !== undefined) ? _mods[r.id].qtReal : 0,
-    history: (_mods[r.id] && Array.isArray(_mods[r.id].history)) ? _mods[r.id].history : [],
-    dte:    (_mods[r.id] && _mods[r.id].dte !== undefined) ? _mods[r.id].dte : r.dte,
-    dtp:    (_mods[r.id] && _mods[r.id].dtp !== undefined) ? _mods[r.id].dtp : r.dtp,
-    dem:    (_mods[r.id] && _mods[r.id].dem !== undefined) ? _mods[r.id].dem : r.dem,
-    _savingMonth: (_mods[r.id] && _mods[r.id].savingMonth) || '',
-    _promoted: !!(_mods[r.id] && _mods[r.id]._promoted)
-  }))
+  ...RAW_DATA.map(r => _hydrate(r, _mods, false))
 ];
 
 // No init, depois que o Firebase tá pronto, tenta carregar mods remotos
@@ -10647,51 +10748,8 @@ function reloadFromStorage() {
   const fresh_mods = _loadMods();
   const fresh_newRecs = _loadNewRecs();
   const newData = [
-    ...fresh_newRecs.map(r => ({
-      ...r,
-      status: (fresh_mods[r.id] && fresh_mods[r.id].status) || r.status || 'Pendente',
-      files:  (fresh_mods[r.id] && fresh_mods[r.id].files)  || r.files  || [],
-      obs:    (fresh_mods[r.id] && fresh_mods[r.id].obs)    || r.obs    || '',
-      materialCompra: (fresh_mods[r.id] && fresh_mods[r.id].materialCompra) || r.materialCompra || '',
-      nf:     (fresh_mods[r.id] && fresh_mods[r.id].nf) || r.nf || '',
-      sapIron:(fresh_mods[r.id] && fresh_mods[r.id].sapIron) || r.sapIron || '',
-      pedidoIron:(fresh_mods[r.id] && fresh_mods[r.id].pedidoIron) || r.pedidoIron || '',
-      chaveNF:(fresh_mods[r.id] && fresh_mods[r.id].chaveNF) || r.chaveNF || '',
-      buyChk: (fresh_mods[r.id] && fresh_mods[r.id].buyChk) || {pedido:false, cotado:false, recebido:false},
-      buyList: (fresh_mods[r.id] && Array.isArray(fresh_mods[r.id].buyList)) ? fresh_mods[r.id].buyList : [],
-      cu:     (fresh_mods[r.id] && fresh_mods[r.id].cu !== undefined) ? fresh_mods[r.id].cu : r.cu,
-      cuCnc:  (fresh_mods[r.id] && fresh_mods[r.id].cuCnc !== undefined) ? fresh_mods[r.id].cuCnc : r.cuCnc,
-      cprod:  (fresh_mods[r.id] && fresh_mods[r.id].cprod !== undefined) ? fresh_mods[r.id].cprod : (r.cprod || 0),
-      qtReal: (fresh_mods[r.id] && fresh_mods[r.id].qtReal !== undefined) ? fresh_mods[r.id].qtReal : r.qtReal,
-      dte:    (fresh_mods[r.id] && fresh_mods[r.id].dte !== undefined) ? fresh_mods[r.id].dte : r.dte,
-      dtp:    (fresh_mods[r.id] && fresh_mods[r.id].dtp !== undefined) ? fresh_mods[r.id].dtp : r.dtp,
-      dem:    (fresh_mods[r.id] && fresh_mods[r.id].dem !== undefined) ? fresh_mods[r.id].dem : r.dem,
-      _savingMonth: (fresh_mods[r.id] && fresh_mods[r.id].savingMonth) || '',
-      _promoted: !!(fresh_mods[r.id] && fresh_mods[r.id]._promoted),
-      _isNew: true
-    })),
-    ...RAW_DATA.map(r => ({
-      ...r,
-      status: (fresh_mods[r.id] && fresh_mods[r.id].status) || 'Pendente',
-      files:  (fresh_mods[r.id] && fresh_mods[r.id].files)  || [],
-      obs:    (fresh_mods[r.id] && fresh_mods[r.id].obs)    || '',
-      materialCompra: (fresh_mods[r.id] && fresh_mods[r.id].materialCompra) || '',
-      nf:     (fresh_mods[r.id] && fresh_mods[r.id].nf) || '',
-      sapIron:(fresh_mods[r.id] && fresh_mods[r.id].sapIron) || '',
-      pedidoIron:(fresh_mods[r.id] && fresh_mods[r.id].pedidoIron) || '',
-      chaveNF:(fresh_mods[r.id] && fresh_mods[r.id].chaveNF) || '',
-      buyChk: (fresh_mods[r.id] && fresh_mods[r.id].buyChk) || {pedido:false, cotado:false, recebido:false},
-      buyList: (fresh_mods[r.id] && Array.isArray(fresh_mods[r.id].buyList)) ? fresh_mods[r.id].buyList : [],
-      cu:     (fresh_mods[r.id] && fresh_mods[r.id].cu !== undefined) ? fresh_mods[r.id].cu : r.cu,
-      cuCnc:  (fresh_mods[r.id] && fresh_mods[r.id].cuCnc !== undefined) ? fresh_mods[r.id].cuCnc : (r.cuCnc || 0),
-      cprod:  (fresh_mods[r.id] && fresh_mods[r.id].cprod !== undefined) ? fresh_mods[r.id].cprod : 0,
-      qtReal: (fresh_mods[r.id] && fresh_mods[r.id].qtReal !== undefined) ? fresh_mods[r.id].qtReal : 0,
-      dte:    (fresh_mods[r.id] && fresh_mods[r.id].dte !== undefined) ? fresh_mods[r.id].dte : r.dte,
-      dtp:    (fresh_mods[r.id] && fresh_mods[r.id].dtp !== undefined) ? fresh_mods[r.id].dtp : r.dtp,
-      dem:    (fresh_mods[r.id] && fresh_mods[r.id].dem !== undefined) ? fresh_mods[r.id].dem : r.dem,
-      _savingMonth: (fresh_mods[r.id] && fresh_mods[r.id].savingMonth) || '',
-      _promoted: !!(fresh_mods[r.id] && fresh_mods[r.id]._promoted)
-    }))
+    ...fresh_newRecs.map(r => _hydrate(r, fresh_mods, true)),
+    ...RAW_DATA.map(r => _hydrate(r, fresh_mods, false))
   ];
   // Substitui o conteúdo do array `data` mantendo a referência
   data.length = 0;
@@ -11034,7 +11092,7 @@ function openD(id) {
       <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;font-weight:600">Data de chegada do Material</div>
       <input id="dDcm" type="date" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px;color:#333" value="${(r.dcm||'').replace(/"/g,'&quot;')}" onchange="Sol.saveDcm('${r.id}', this.value)">
 
-      <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;font-weight:600">Serviço externo <span id="dPropTReq" style="color:#dc2626;${(r.status==='Aprovação para compra'||r.status==='Aguardando SAP IRON')?'':' display:none'}">* OBRIGATÓRIO</span></div>
+      <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;font-weight:600">Serviço externo <span id="dPropTReq" style="color:#dc2626;${r.status==='Aprovação para compra'?'':' display:none'}">* OBRIGATÓRIO</span></div>
       <input id="dPropT" placeholder="Ex.: Fornecedor X — R$ 1.200" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px" value="${esc(r.propT)}" oninput="Sol.saveTxt('${r.id}','propT', this.value)">
       <div id="dPropTMsg" style="color:#dc2626;font-size:12px;display:none;margin-top:4px"></div>
 
@@ -11114,10 +11172,12 @@ function updStatus(id,st) {
 
   // ── Validação de campos obrigatórios por status ──
   // Material obrigatório em: "Aguardando SAP IRON" e "Aprovação para compra"
-  // Serviço externo obrigatório em: "Aguardando SAP IRON" e "Aprovação para compra"
-  // SAP IRON: não é mais obrigatório (Lari pediu remoção 09/06/2026)
+  // Serviço externo obrigatório SÓ em: "Aprovação para compra"
+  //   (em "Aguardando SAP IRON" basta o material — esse status significa
+  //    "tem material, falta SAP IRON", então propT pode vir depois)
+  // SAP IRON: não é mais obrigatório em nenhum status
   const needsMaterial = (st === 'Aguardando SAP IRON' || st === 'Aprovação para compra');
-  const needsPropT = (st === 'Aguardando SAP IRON' || st === 'Aprovação para compra');
+  const needsPropT = (st === 'Aprovação para compra');
   const mat = (r.materialCompra||'').trim();
   const propT = (r.propT||'').trim();
   const errors = [];
@@ -11195,7 +11255,7 @@ function updStatus(id,st) {
   const matReq = document.getElementById('dMatReq');
   if (matReq) matReq.style.display = (st === 'Aguardando SAP IRON' || st === 'Aprovação para compra') ? '' : 'none';
   const propTReq = document.getElementById('dPropTReq');
-  if (propTReq) propTReq.style.display = (st === 'Aguardando SAP IRON' || st === 'Aprovação para compra') ? '' : 'none';
+  if (propTReq) propTReq.style.display = (st === 'Aprovação para compra') ? '' : 'none';
   // SAP IRON não é mais obrigatório
   const sapReq = document.getElementById('dSapReq');
   if (sapReq) sapReq.style.display = 'none';
@@ -11556,174 +11616,332 @@ function renderList(){
   const aprItems = data.filter(r => r.status === 'Aprovação para compra');
   const q = (_lstFilter.q||'').toLowerCase();
   const plF = _lstFilter.pl;
+  const urgF = _lstFilter.urgency || '';
+  const matStF = _lstFilter.matStatus || '';
 
-  // Filtra pela busca/planta (em qualquer material da buyList ou em legacy materialCompra)
+  // ─── PALETA HARMÔNICA ───
+  // Neutros: 50/100/200/500/700/900
+  // Primário azul: 600 (#2563eb)
+  // Estados semânticos: red/orange/amber/green
+  const PAL = {
+    bg:        '#f9fafb',  // gray-50
+    surface:   '#ffffff',
+    border:    '#e5e7eb',  // gray-200
+    borderHv:  '#d1d5db',  // gray-300
+    textMuted: '#6b7280',  // gray-500
+    text:      '#374151',  // gray-700
+    textBold:  '#111827',  // gray-900
+    primary:   '#2563eb',  // blue-600
+    primaryBg: '#eff6ff',  // blue-50
+    primaryBd: '#bfdbfe',  // blue-200
+    danger:    '#dc2626',  // red-600
+    dangerBg:  '#fef2f2',  // red-50
+    dangerBd:  '#fecaca',  // red-200
+    warning:   '#ea580c',  // orange-600
+    warningBg: '#fff7ed',  // orange-50
+    warningBd: '#fed7aa',  // orange-200
+    info:      '#ca8a04',  // amber-600
+    infoBg:    '#fefce8',  // amber-50
+    infoBd:    '#fef08a',  // amber-200
+    success:   '#16a34a',  // green-600
+    successBg: '#f0fdf4',  // green-50
+    successBd: '#bbf7d0'   // green-200
+  };
+
+  // ─── HELPERS DE DATA E URGÊNCIA ───
+  const today = new Date(); today.setHours(0,0,0,0);
+  const parseDt = (s) => {
+    if (!s) return null;
+    const [y,m,d] = String(s).split('-').map(Number);
+    return (!y||!m||!d) ? null : new Date(y, m-1, d);
+  };
+  const urgencyOf = (r) => {
+    const dt = parseDt(r.dtp);
+    if (!dt) return { key:'nodate', label:'Sem data', color:PAL.textMuted, bg:PAL.bg, bd:PAL.border, days:null };
+    const days = Math.floor((dt - today) / 86400000);
+    if (days < 0)  return { key:'overdue', label:'Atrasada',          color:PAL.danger,  bg:PAL.dangerBg,  bd:PAL.dangerBd,  days };
+    if (days <= 7) return { key:'week',    label:'Próximos 7 dias',   color:PAL.warning, bg:PAL.warningBg, bd:PAL.warningBd, days };
+    if (days <= 30)return { key:'month',   label:'Este mês',          color:PAL.info,    bg:PAL.infoBg,    bd:PAL.infoBd,    days };
+    return            { key:'future',  label:'Futuro',            color:PAL.success, bg:PAL.successBg, bd:PAL.successBd, days };
+  };
+  const fmtDt = (s) => s ? s.split('-').reverse().join('/') : '—';
+
+  aprItems.forEach(r => { r._urg = urgencyOf(r); });
+
+  // ─── FILTROS ───
   const filt = aprItems.filter(r => {
     if (plF && r.pl !== plF) return false;
+    if (urgF && r._urg.key !== urgF) return false;
+    if (matStF) {
+      const list = Array.isArray(r.buyList) ? r.buyList : [];
+      const hasMatch = list.some(b => {
+        const c = b.chk || {};
+        if (matStF === 'pending')  return !c.cotado && !c.pedido && !c.recebido;
+        if (matStF === 'cotado')   return c.cotado && !c.pedido;
+        if (matStF === 'pedido')   return c.pedido && !c.recebido;
+        if (matStF === 'recebido') return c.recebido;
+        return true;
+      });
+      if (list.length > 0 && !hasMatch) return false;
+      if (list.length === 0 && matStF !== 'pending') return false;
+    }
     if (q) {
-      const inPeca = (r.p||'').toLowerCase().includes(q);
-      const inLeg  = (r.materialCompra||'').toLowerCase().includes(q);
-      const inLst  = Array.isArray(r.buyList) && r.buyList.some(b => (b.mat||'').toLowerCase().includes(q));
-      const inId   = String(r.id).includes(q);
-      if (!(inPeca || inLeg || inLst || inId)) return false;
+      const ok =
+        (r.p||'').toLowerCase().includes(q) ||
+        (r.materialCompra||'').toLowerCase().includes(q) ||
+        String(r.id).includes(q) ||
+        (Array.isArray(r.buyList) && r.buyList.some(b =>
+          (b.mat||'').toLowerCase().includes(q) || (b.forn||'').toLowerCase().includes(q)));
+      if (!ok) return false;
     }
     return true;
   });
 
-  // Métricas globais (sobre todos aprovados, não filtrados)
+  // ─── ORDENAÇÃO POR URGÊNCIA ───
+  const ORDER = { overdue:0, week:1, month:2, future:3, nodate:4 };
+  filt.sort((a,b) => {
+    const o = ORDER[a._urg.key] - ORDER[b._urg.key];
+    if (o !== 0) return o;
+    return (a._urg.days ?? 99999) - (b._urg.days ?? 99999);
+  });
+
+  // ─── MÉTRICAS GLOBAIS ───
   const totSol = aprItems.length;
-  let totMat = 0, totPedido = 0, totCotado = 0, totRecebido = 0;
+  let totMat=0, totPedido=0, totCotado=0, totRecebido=0, totSemMat=0;
+  const urgCount = { overdue:0, week:0, month:0, future:0, nodate:0 };
   aprItems.forEach(r => {
-    if (Array.isArray(r.buyList)) {
-      totMat += r.buyList.length;
-      r.buyList.forEach(b => {
-        const c = b.chk || {};
-        if (c.pedido) totPedido++;
-        if (c.cotado) totCotado++;
-        if (c.recebido) totRecebido++;
-      });
-    }
+    urgCount[r._urg.key]++;
+    const list = Array.isArray(r.buyList) ? r.buyList : [];
+    if (list.length === 0) totSemMat++;
+    totMat += list.length;
+    list.forEach(b => {
+      const c = b.chk || {};
+      if (c.pedido)   totPedido++;
+      if (c.cotado)   totCotado++;
+      if (c.recebido) totRecebido++;
+    });
   });
 
   const plsUnique = [...new Set(aprItems.map(r => r.pl).filter(Boolean))].sort();
   const plOpts = '<option value="">Todas as plantas</option>' +
     plsUnique.map(p => `<option value="${_esc(p)}"${p===plF?' selected':''}>${_esc(p)}</option>`).join('');
 
-  // Renderiza UMA solicitação como card
+  const urgOpts = `
+    <option value="">Todas as datas</option>
+    <option value="overdue"${urgF==='overdue'?' selected':''}>● Atrasadas (${urgCount.overdue})</option>
+    <option value="week"${urgF==='week'?' selected':''}>● Próximos 7 dias (${urgCount.week})</option>
+    <option value="month"${urgF==='month'?' selected':''}>● Este mês (${urgCount.month})</option>
+    <option value="future"${urgF==='future'?' selected':''}>● Futuro (${urgCount.future})</option>
+    <option value="nodate"${urgF==='nodate'?' selected':''}>○ Sem data (${urgCount.nodate})</option>`;
+
+  const matStOpts = `
+    <option value="">Todos os materiais</option>
+    <option value="pending"${matStF==='pending'?' selected':''}>Sem ação / pendentes</option>
+    <option value="cotado"${matStF==='cotado'?' selected':''}>Cotados</option>
+    <option value="pedido"${matStF==='pedido'?' selected':''}>Pedidos</option>
+    <option value="recebido"${matStF==='recebido'?' selected':''}>Recebidos</option>`;
+
+  // ── Chip helper ──
+  const chip = (txt, c, bg, bd) =>
+    `<span style="display:inline-flex;align-items:center;font-size:11px;font-weight:600;color:${c};background:${bg};border:1px solid ${bd};padding:3px 10px;border-radius:99px;white-space:nowrap">${txt}</span>`;
+
+  // ── KPI helper ──
+  const kpi = (label, val, color) => `
+    <div style="background:${PAL.surface};border:1px solid ${PAL.border};border-radius:8px;padding:12px 14px;flex:1;min-width:120px">
+      <div style="font-size:10px;color:${PAL.textMuted};font-weight:600;text-transform:uppercase;letter-spacing:.5px">${label}</div>
+      <div style="font-size:22px;font-weight:700;color:${color};margin-top:4px;line-height:1;font-variant-numeric:tabular-nums">${val}</div>
+    </div>`;
+
+  // ── CARD HTML ──
   const cardHtml = (r) => {
     const list = Array.isArray(r.buyList) ? r.buyList : [];
-    const itemsHtml = list.length
-      ? list.map((b, i) => {
-          const c = b.chk || {pedido:false, cotado:false, recebido:false};
-          const done = c.recebido;
-          const sapBadge = b.sap ? `<span style="font-family:var(--mono);font-size:10px;color:#666;background:#f1f3f7;padding:2px 6px;border-radius:3px;margin-left:6px;white-space:nowrap">SAP ${_esc(b.sap)}</span>` : '';
-          const qtVal = (b.qt != null) ? String(b.qt).replace('.',',') : '';
-          const fornVal = (b.forn||'').replace(/"/g,'&quot;');
-          return `
-          <div style="background:${done?'#f0fdf4':'#fff'};border:1px solid ${done?'#bbf7d0':'#e5e7eb'};border-radius:6px;padding:10px 12px;margin-top:8px">
-            <div style="display:flex;align-items:flex-start;gap:8px;justify-content:space-between">
-              <div style="flex:1;min-width:0">
-                <div style="font-size:11px;color:#888;font-weight:600">Material ${i+1}</div>
-                <div style="font-size:13px;color:#222;font-weight:500;word-break:break-word;line-height:1.35;margin-top:2px">${_esc(b.mat||'')}${sapBadge}</div>
-              </div>
-              <button onclick="Sol.removeBuyItem('${r.id}','${b.blId}')" title="Remover material" style="background:none;border:none;color:#dc2626;cursor:pointer;font-size:18px;padding:0 4px;line-height:1">×</button>
-            </div>
-            <div style="display:grid;grid-template-columns:120px 1fr;gap:8px;margin-top:10px">
-              <div>
-                <div style="font-size:10px;color:#666;font-weight:600;text-transform:uppercase;letter-spacing:.3px">Qtd a comprar</div>
-                <input type="text" inputmode="decimal" value="${qtVal}"
-                  oninput="Sol.updateBuyItem('${r.id}','${b.blId}','qt',this.value)"
-                  placeholder="0"
-                  style="width:100%;padding:5px 8px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;font-family:var(--mono);box-sizing:border-box;margin-top:2px;text-align:right;color:#1a56db;font-weight:600">
-              </div>
-              <div>
-                <div style="font-size:10px;color:#666;font-weight:600;text-transform:uppercase;letter-spacing:.3px">Fornecedor</div>
-                <input type="text" value="${fornVal}"
-                  oninput="Sol.updateBuyItem('${r.id}','${b.blId}','forn',this.value)"
-                  placeholder="Nome do fornecedor (opcional)"
-                  style="width:100%;padding:5px 8px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;font-family:inherit;box-sizing:border-box;margin-top:2px">
-              </div>
-            </div>
-            <div style="display:flex;gap:14px;margin-top:10px;flex-wrap:wrap;padding-top:8px;border-top:1px dashed #e5e7eb">
-              <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:${c.pedido?'#15803d':'#555'};cursor:pointer;font-weight:${c.pedido?'600':'normal'}">
-                <input type="checkbox" ${c.pedido?'checked':''} onchange="Sol.toggleBlChk('${r.id}','${b.blId}','pedido',this.checked)">
-                📦 Pedido realizado
-              </label>
-              <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:${c.cotado?'#15803d':'#555'};cursor:pointer;font-weight:${c.cotado?'600':'normal'}">
-                <input type="checkbox" ${c.cotado?'checked':''} onchange="Sol.toggleBlChk('${r.id}','${b.blId}','cotado',this.checked)">
-                💰 Cotação realizada
-              </label>
-              <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:${c.recebido?'#15803d':'#555'};cursor:pointer;font-weight:${c.recebido?'600':'normal'}">
-                <input type="checkbox" ${c.recebido?'checked':''} onchange="Sol.toggleBlChk('${r.id}','${b.blId}','recebido',this.checked)">
-                ✅ Material recebido
-              </label>
-            </div>
-          </div>`;
-        }).join('')
-      : '<div style="color:#999;font-size:12px;padding:10px 12px;background:#fafafa;border:1px dashed #d1d5db;border-radius:6px;margin-top:8px;text-align:center">Nenhum material adicionado ainda.</div>';
+    const totItems = list.length;
+    const recebidos = list.filter(b => (b.chk||{}).recebido).length;
+    const pedidos = list.filter(b => (b.chk||{}).pedido).length;
+    const cotados = list.filter(b => (b.chk||{}).cotado).length;
+    const progresso = totItems > 0 ? Math.round((recebidos / totItems) * 100) : 0;
+    const urg = r._urg;
+    const diasTxt = urg.days === null ? '' :
+      urg.days < 0   ? `${Math.abs(urg.days)}d atrasada` :
+      urg.days === 0 ? 'hoje' :
+      `em ${urg.days} dia${urg.days>1?'s':''}`;
 
-    // Material legado (se já tinha algo em materialCompra mas não está em buyList)
+    // Materiais
+    const itemsHtml = list.length ? list.map((b, i) => {
+      const c = b.chk || {};
+      const stateColor = c.recebido ? PAL.success : (c.pedido ? PAL.primary : (c.cotado ? PAL.info : PAL.textMuted));
+      const stateBg    = c.recebido ? PAL.successBg : (c.pedido ? PAL.primaryBg : (c.cotado ? PAL.infoBg : PAL.surface));
+      const stateBd    = c.recebido ? PAL.successBd : (c.pedido ? PAL.primaryBd : (c.cotado ? PAL.infoBd : PAL.border));
+      const stateLabel = c.recebido ? '✓ Recebido' : (c.pedido ? '📦 Pedido' : (c.cotado ? '💰 Cotado' : 'Pendente'));
+      const sapBadge = b.sap ? `<span style="font-family:var(--mono);font-size:10px;color:${PAL.primary};background:${PAL.primaryBg};padding:2px 7px;border-radius:99px;white-space:nowrap;font-weight:600;border:1px solid ${PAL.primaryBd}">SAP ${_esc(b.sap)}</span>` : '';
+      const qtVal = (b.qt != null) ? String(b.qt).replace('.',',') : '';
+      const fornVal = (b.forn||'').replace(/"/g,'&quot;');
+      return `
+        <div style="background:${stateBg};border:1px solid ${stateBd};border-radius:8px;padding:12px;margin-top:8px;transition:border-color .15s">
+          <div style="display:flex;align-items:flex-start;gap:8px;justify-content:space-between">
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+                <span style="font-size:10px;color:${PAL.textMuted};font-weight:700;background:${PAL.bg};padding:2px 8px;border-radius:99px;border:1px solid ${PAL.border}">#${i+1}</span>
+                <span style="font-size:10px;color:${stateColor};font-weight:700;padding:2px 8px;border-radius:99px;background:${PAL.surface};border:1px solid ${stateBd}">${stateLabel}</span>
+                ${sapBadge}
+              </div>
+              <div style="font-size:13px;color:${PAL.textBold};font-weight:500;word-break:break-word;line-height:1.45">${_esc(b.mat||'')}</div>
+            </div>
+            <button onclick="Sol.removeBuyItem('${r.id}','${b.blId}')" title="Remover material" style="background:none;border:none;color:${PAL.danger};cursor:pointer;font-size:18px;padding:0 4px;line-height:1;opacity:.4;transition:opacity .15s" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.4">×</button>
+          </div>
+
+          <div style="display:grid;grid-template-columns:100px 1fr;gap:8px;margin-top:10px">
+            <div>
+              <div style="font-size:10px;color:${PAL.textMuted};font-weight:600;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">Qtd</div>
+              <input type="text" inputmode="decimal" value="${qtVal}"
+                oninput="Sol.updateBuyItem('${r.id}','${b.blId}','qt',this.value)"
+                placeholder="0"
+                style="width:100%;padding:7px 10px;border:1px solid ${PAL.borderHv};border-radius:6px;font-size:13px;font-family:var(--mono);box-sizing:border-box;text-align:right;color:${PAL.primary};font-weight:700;background:${PAL.surface}">
+            </div>
+            <div>
+              <div style="font-size:10px;color:${PAL.textMuted};font-weight:600;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">Fornecedor</div>
+              <input type="text" value="${fornVal}"
+                oninput="Sol.updateBuyItem('${r.id}','${b.blId}','forn',this.value)"
+                placeholder="Opcional"
+                style="width:100%;padding:7px 10px;border:1px solid ${PAL.borderHv};border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;background:${PAL.surface}">
+            </div>
+          </div>
+
+          <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+            <label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:${c.cotado?PAL.info:PAL.textMuted};background:${c.cotado?PAL.infoBg:PAL.surface};border:1px solid ${c.cotado?PAL.infoBd:PAL.border};padding:5px 11px;border-radius:99px;cursor:pointer;font-weight:${c.cotado?'700':'500'};transition:all .15s;user-select:none">
+              <input type="checkbox" ${c.cotado?'checked':''} onchange="Sol.toggleBlChk('${r.id}','${b.blId}','cotado',this.checked)" style="margin:0;cursor:pointer">💰 Cotado
+            </label>
+            <label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:${c.pedido?PAL.primary:PAL.textMuted};background:${c.pedido?PAL.primaryBg:PAL.surface};border:1px solid ${c.pedido?PAL.primaryBd:PAL.border};padding:5px 11px;border-radius:99px;cursor:pointer;font-weight:${c.pedido?'700':'500'};transition:all .15s;user-select:none">
+              <input type="checkbox" ${c.pedido?'checked':''} onchange="Sol.toggleBlChk('${r.id}','${b.blId}','pedido',this.checked)" style="margin:0;cursor:pointer">📦 Pedido
+            </label>
+            <label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;color:${c.recebido?PAL.success:PAL.textMuted};background:${c.recebido?PAL.successBg:PAL.surface};border:1px solid ${c.recebido?PAL.successBd:PAL.border};padding:5px 11px;border-radius:99px;cursor:pointer;font-weight:${c.recebido?'700':'500'};transition:all .15s;user-select:none">
+              <input type="checkbox" ${c.recebido?'checked':''} onchange="Sol.toggleBlChk('${r.id}','${b.blId}','recebido',this.checked)" style="margin:0;cursor:pointer">✅ Recebido
+            </label>
+          </div>
+        </div>`;
+    }).join('') : `
+      <div style="color:${PAL.textMuted};font-size:12px;padding:18px;background:${PAL.bg};border:2px dashed ${PAL.border};border-radius:8px;margin-top:10px;text-align:center;font-style:italic">
+        Nenhum material adicionado. Use o formulário abaixo para começar.
+      </div>`;
+
+    // Material legado
     const legacyMat = (r.materialCompra||'').trim();
     const legacyInList = list.some(b => (b.mat||'').toUpperCase() === legacyMat.toUpperCase());
     const legacyHtml = (legacyMat && !legacyInList)
-      ? `<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 12px;margin-top:8px;font-size:12px;color:#854d0e;display:flex;align-items:center;justify-content:space-between;gap:8px">
-          <span>📌 <b>Material legado:</b> ${_esc(legacyMat)}</span>
-          <button onclick="Sol.addBuyItem('${r.id}', '${_esc(legacyMat).replace(/'/g,'&#39;')}', ${r.qt||1}, '')" style="background:#854d0e;color:#fff;border:none;padding:4px 10px;border-radius:4px;font-size:11px;cursor:pointer;white-space:nowrap">+ Adicionar à lista</button>
+      ? `<div style="background:${PAL.infoBg};border:1px solid ${PAL.infoBd};border-radius:8px;padding:10px 14px;margin-top:10px;font-size:12px;color:#854d0e;display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <div style="flex:1;min-width:0"><b>📌 Material do detalhe:</b> ${_esc(legacyMat)}</div>
+          <button onclick="Sol.addBuyItem('${r.id}', '${_esc(legacyMat).replace(/'/g,'&#39;')}', ${r.qt||1}, '')" style="background:#92400e;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:11px;cursor:pointer;white-space:nowrap;font-weight:600">+ Adicionar à lista</button>
          </div>`
       : '';
 
     return `
-    <div style="background:#fff;border:1px solid #d1d5db;border-radius:8px;padding:14px;margin-top:14px">
-      <div style="display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap">
+    <article style="background:${PAL.surface};border:1px solid ${PAL.border};border-left:4px solid ${urg.color};border-radius:10px;padding:16px;margin-top:12px;transition:box-shadow .15s" onmouseover="this.style.boxShadow='0 2px 8px rgba(0,0,0,.06)'" onmouseout="this.style.boxShadow='none'">
+      <!-- Header -->
+      <header style="display:flex;align-items:flex-start;gap:12px;justify-content:space-between;flex-wrap:wrap;margin-bottom:10px">
         <div style="flex:1;min-width:0">
-          <div style="font-size:15px;font-weight:700;color:#1a1a1a">#${r.id} — ${_esc(r.p||'—')}</div>
-          <div style="font-size:12px;color:#666;margin-top:3px">${_esc(r.pl||'—')} · qt=${r.qt||'—'} · ${_esc(r.sl||'sem solicitante')}${r.ar?' · '+_esc(r.ar):''}</div>
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+            ${chip(`${urg.label}${diasTxt?' · '+diasTxt:''}`, urg.color, urg.bg, urg.bd)}
+            ${chip(`📍 ${_esc(r.pl||'—')}`, PAL.text, PAL.bg, PAL.border)}
+            <span style="font-size:11px;color:${PAL.textMuted};font-family:var(--mono);font-weight:600">#${r.id}</span>
+          </div>
+          <h3 style="font-size:15px;font-weight:700;color:${PAL.textBold};line-height:1.35;margin:0">${_esc(r.p||'—')}</h3>
+          <div style="font-size:11px;color:${PAL.textMuted};margin-top:4px;display:flex;gap:10px;flex-wrap:wrap">
+            <span>📅 Produção: <b style="color:${PAL.text}">${fmtDt(r.dtp)}</b></span>
+            <span>Qtd: <b style="color:${PAL.text}">${r.qt||'—'}</b></span>
+            <span>Solicitante: <b style="color:${PAL.text}">${_esc(r.sl||'—')}</b></span>
+          </div>
         </div>
-        <button onclick="Sol.closeList();Sol.openD('${r.id}')" style="background:#fff;color:#2c5aa0;border:1px solid #2c5aa0;padding:5px 12px;border-radius:5px;font-size:11px;cursor:pointer">Abrir detalhe</button>
-      </div>
+        <button onclick="Sol.closeList();Sol.openD('${r.id}')" title="Abrir detalhe da solicitação" style="background:${PAL.surface};color:${PAL.primary};border:1px solid ${PAL.primaryBd};padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600;white-space:nowrap;transition:all .15s" onmouseover="this.style.background='${PAL.primaryBg}'" onmouseout="this.style.background='${PAL.surface}'">Detalhe →</button>
+      </header>
+
+      ${totItems > 0 ? `
+      <!-- Progress -->
+      <div style="margin:10px 0 6px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;font-size:11px;color:${PAL.textMuted}">
+          <span><b style="color:${PAL.text}">${totItems}</b> material${totItems>1?'is':''} · 💰 ${cotados} · 📦 ${pedidos} · ✅ ${recebidos}</span>
+          <span style="font-weight:700;color:${progresso===100?PAL.success:progresso>=50?PAL.info:PAL.textMuted};font-variant-numeric:tabular-nums">${progresso}%</span>
+        </div>
+        <div style="height:6px;background:${PAL.border};border-radius:99px;overflow:hidden">
+          <div style="width:${progresso}%;height:100%;background:${progresso===100?PAL.success:progresso>=50?PAL.warning:PAL.primary};transition:width .3s ease;border-radius:99px"></div>
+        </div>
+      </div>` : ''}
+
       ${legacyHtml}
       ${itemsHtml}
-      <div style="border-top:1px solid #e5e7eb;margin-top:12px;padding-top:10px">
-        <div style="font-size:11px;color:#666;font-weight:600;text-transform:uppercase;letter-spacing:.3px;margin-bottom:6px">+ Adicionar material</div>
-        <div style="display:grid;grid-template-columns:1fr 90px 160px auto;gap:6px;align-items:end">
-          <div>
-            <div style="font-size:10px;color:#888;margin-bottom:2px">Material (busca no catálogo)</div>
-            <input id="bl-add-mat-${r.id}" list="matCatalogList" placeholder="Digite ou selecione (ex.: TARUGO INOX 304 ...)"
-              style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:12px;font-family:inherit;box-sizing:border-box">
-          </div>
-          <div>
-            <div style="font-size:10px;color:#888;margin-bottom:2px">Qtd</div>
-            <input id="bl-add-qt-${r.id}" type="text" inputmode="decimal" placeholder="${r.qt||1}"
-              style="width:100%;padding:7px 8px;border:1px solid #ddd;border-radius:5px;font-size:12px;font-family:var(--mono);box-sizing:border-box;text-align:right">
-          </div>
-          <div>
-            <div style="font-size:10px;color:#888;margin-bottom:2px">Fornecedor (opcional)</div>
-            <input id="bl-add-forn-${r.id}" type="text" placeholder="Nome do fornecedor"
-              style="width:100%;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:12px;font-family:inherit;box-sizing:border-box">
-          </div>
+
+      <!-- Add form -->
+      <div style="border-top:1px solid ${PAL.border};margin-top:14px;padding-top:12px">
+        <div style="font-size:10px;color:${PAL.textMuted};font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">+ Adicionar material</div>
+        <div style="display:grid;grid-template-columns:1fr 90px 150px auto;gap:8px;align-items:stretch">
+          <input id="bl-add-mat-${r.id}" list="matCatalogList" placeholder="Material (digite ou escolha no catálogo)"
+            style="padding:8px 12px;border:1px solid ${PAL.borderHv};border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;background:${PAL.surface}">
+          <input id="bl-add-qt-${r.id}" type="text" inputmode="decimal" placeholder="Qtd ${r.qt||1}"
+            style="padding:8px 10px;border:1px solid ${PAL.borderHv};border-radius:6px;font-size:13px;font-family:var(--mono);box-sizing:border-box;text-align:right;background:${PAL.surface}">
+          <input id="bl-add-forn-${r.id}" type="text" placeholder="Fornecedor (opcional)"
+            style="padding:8px 12px;border:1px solid ${PAL.borderHv};border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;background:${PAL.surface}">
           <button onclick="const m=document.getElementById('bl-add-mat-${r.id}'),q=document.getElementById('bl-add-qt-${r.id}'),f=document.getElementById('bl-add-forn-${r.id}');if(!m.value.trim()){m.focus();return;}Sol.addBuyItem('${r.id}', m.value, q.value, f.value);m.value='';q.value='';f.value='';m.focus()"
-            style="background:#2c5aa0;color:#fff;border:none;padding:7px 14px;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;height:33px">+ Adicionar</button>
+            style="background:${PAL.primary};color:#fff;border:none;padding:8px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .15s" onmouseover="this.style.background='#1e40af'" onmouseout="this.style.background='${PAL.primary}'">+ Adicionar</button>
         </div>
       </div>
-    </div>`;
+    </article>`;
   };
 
   const body = filt.length
     ? filt.map(cardHtml).join('')
-    : '<div style="color:#999;font-size:13px;padding:30px;text-align:center;background:#fafafa;border-radius:8px;margin-top:14px">Nenhuma solicitação com status <b>"Aprovação para compra"</b> encontrada com os filtros atuais.</div>';
+    : `<div style="color:${PAL.textMuted};font-size:14px;padding:60px 30px;text-align:center;background:${PAL.surface};border:2px dashed ${PAL.border};border-radius:10px;margin-top:14px">
+        <div style="font-size:40px;margin-bottom:10px;opacity:.6">📭</div>
+        <div style="font-weight:600;color:${PAL.text};margin-bottom:4px">Nenhuma solicitação encontrada</div>
+        <div style="font-size:12px">${aprItems.length === 0 ? 'Nenhuma solicitação está em "Aprovação para compra" no momento.' : 'Tente ajustar os filtros acima.'}</div>
+       </div>`;
 
-  // Datalist global com os 604 materiais do catálogo (definido uma vez)
   const catalogDatalist = `<datalist id="matCatalogList">${MATERIAL_DESCS.map(d => `<option value="${d.replace(/"/g,'&quot;')}">`).join('')}</datalist>`;
 
+  // ── COMPÕE O LAYOUT FINAL ──
   document.getElementById('lstContent').innerHTML = `
-    <div style="background:#fff;border-radius:8px;max-width:900px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.2)">
-      <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;background:#f8fafe;display:flex;align-items:center;justify-content:space-between;gap:12px">
+    <div style="background:${PAL.bg};border-radius:12px;max-width:1040px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.25);border:1px solid ${PAL.border}">
+
+      <!-- Cabeçalho -->
+      <header style="padding:18px 24px;background:${PAL.surface};border-bottom:1px solid ${PAL.border};display:flex;align-items:center;justify-content:space-between;gap:16px">
         <div>
-          <div style="font-size:17px;font-weight:700;color:#2c5aa0">🛒 Materiais para Compra</div>
-          <div style="font-size:12px;color:#666;margin-top:2px">
-            <b>${totSol}</b> solicitação${totSol!==1?'ões':''} aprovada${totSol!==1?'s':''} ·
-            <b>${totMat}</b> material${totMat!==1?'is':''} cadastrado${totMat!==1?'s':''} ·
-            📦 ${totPedido} pedido${totPedido!==1?'s':''} ·
-            💰 ${totCotado} cotado${totCotado!==1?'s':''} ·
-            ✅ ${totRecebido} recebido${totRecebido!==1?'s':''}
+          <h2 style="font-size:18px;font-weight:700;color:${PAL.textBold};margin:0;display:flex;align-items:center;gap:8px;letter-spacing:-.01em">🛒 Materiais para Compra</h2>
+          <div style="font-size:12px;color:${PAL.textMuted};margin-top:3px">
+            ${filt.length} ${filt.length===1?'solicitação visível':'solicitações visíveis'} de <b style="color:${PAL.text}">${totSol}</b> aprovadas
           </div>
         </div>
-        <button onclick="Sol.closeList()" title="Fechar" style="background:none;border:none;font-size:22px;color:#666;cursor:pointer;padding:0 4px">×</button>
+        <button onclick="Sol.closeList()" title="Fechar" style="background:${PAL.bg};border:1px solid ${PAL.border};color:${PAL.text};font-size:18px;cursor:pointer;width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;line-height:1;transition:background .15s" onmouseover="this.style.background='${PAL.border}'" onmouseout="this.style.background='${PAL.bg}'">×</button>
+      </header>
+
+      <!-- KPIs -->
+      <div style="padding:14px 24px;background:${PAL.surface};border-bottom:1px solid ${PAL.border};display:flex;gap:10px;flex-wrap:wrap">
+        ${kpi('Atrasadas', urgCount.overdue, urgCount.overdue > 0 ? PAL.danger : PAL.textMuted)}
+        ${kpi('Próximos 7 dias', urgCount.week, urgCount.week > 0 ? PAL.warning : PAL.textMuted)}
+        ${kpi('Pedidos feitos', `${totPedido}/${totMat}`, PAL.primary)}
+        ${kpi('Recebidos', `${totRecebido}/${totMat}`, PAL.success)}
+        ${kpi('Sem material', totSemMat, totSemMat > 0 ? PAL.info : PAL.textMuted)}
       </div>
-      <div style="padding:12px 20px;border-bottom:1px solid #e5e7eb;display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#fff">
-        <input type="search" placeholder="Buscar por #id, peça ou material..." value="${_esc(_lstFilter.q||'')}"
+
+      <!-- Filtros -->
+      <div style="padding:14px 24px;background:${PAL.surface};border-bottom:1px solid ${PAL.border};display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="search" placeholder="🔍 Buscar por #id, peça, material ou fornecedor…" value="${_esc(_lstFilter.q||'')}"
           oninput="setListFilter('q',this.value)" onsearch="setListFilter('q',this.value)"
-          style="flex:1;min-width:220px;padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px;font-family:inherit">
-        <select onchange="setListFilter('pl',this.value)" style="padding:7px 10px;border:1px solid #ddd;border-radius:5px;font-size:13px;background:#fff">${plOpts}</select>
+          style="flex:1;min-width:240px;padding:9px 14px;border:1px solid ${PAL.borderHv};border-radius:8px;font-size:13px;font-family:inherit;background:${PAL.surface};transition:border-color .15s" onfocus="this.style.borderColor='${PAL.primary}'" onblur="this.style.borderColor='${PAL.borderHv}'">
+        <select onchange="setListFilter('pl',this.value)" title="Filtrar por planta" style="padding:9px 14px;border:1px solid ${PAL.borderHv};border-radius:8px;font-size:13px;background:${PAL.surface};cursor:pointer;font-family:inherit">${plOpts}</select>
+        <select onchange="setListFilter('urgency',this.value)" title="Filtrar por data de produção" style="padding:9px 14px;border:1px solid ${PAL.borderHv};border-radius:8px;font-size:13px;background:${PAL.surface};cursor:pointer;font-family:inherit">${urgOpts}</select>
+        <select onchange="setListFilter('matStatus',this.value)" title="Filtrar por status do material" style="padding:9px 14px;border:1px solid ${PAL.borderHv};border-radius:8px;font-size:13px;background:${PAL.surface};cursor:pointer;font-family:inherit">${matStOpts}</select>
+        ${(q||plF||urgF||matStF) ? `<button onclick="setListFilter('q','');setListFilter('pl','');setListFilter('urgency','');setListFilter('matStatus','')" title="Limpar todos os filtros" style="background:${PAL.surface};color:${PAL.danger};border:1px solid ${PAL.dangerBd};padding:8px 14px;border-radius:8px;font-size:12px;cursor:pointer;font-weight:600;transition:background .15s" onmouseover="this.style.background='${PAL.dangerBg}'" onmouseout="this.style.background='${PAL.surface}'">✕ Limpar</button>` : ''}
       </div>
-      <div style="flex:1;overflow-y:auto;padding:4px 20px 16px;background:#fafafa">
+
+      <!-- Body -->
+      <div style="flex:1;overflow-y:auto;padding:6px 24px 20px;background:${PAL.bg}">
         ${body}
         ${catalogDatalist}
       </div>
-      <div style="padding:12px 20px;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end;background:#fff">
-        <button onclick="Sol.exportListCSV()" style="background:#fff;color:#374151;border:1px solid #d1d5db;padding:7px 14px;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer">⤓ Exportar CSV</button>
-        <button onclick="Sol.closeList()" style="background:#2c5aa0;color:#fff;border:none;padding:7px 14px;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer">Fechar</button>
-      </div>
+
+      <!-- Footer -->
+      <footer style="padding:14px 24px;background:${PAL.surface};border-top:1px solid ${PAL.border};display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="Sol.exportListCSV()" style="background:${PAL.surface};color:${PAL.text};border:1px solid ${PAL.borderHv};padding:9px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s" onmouseover="this.style.background='${PAL.bg}'" onmouseout="this.style.background='${PAL.surface}'">⤓ Exportar CSV</button>
+        <button onclick="Sol.closeList()" style="background:${PAL.primary};color:#fff;border:none;padding:9px 20px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s" onmouseover="this.style.background='#1e40af'" onmouseout="this.style.background='${PAL.primary}'">Fechar</button>
+      </footer>
     </div>`;
 }
 
