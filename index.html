@@ -2812,6 +2812,19 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
       <label class="prod-input-lbl">Quantas peças planejar para este dia?</label>
       <input id="prodQtd" type="number" min="1" class="prod-input" placeholder="0" onkeydown="if(event.key==='Enter')saveProdRegistry()">
       <input id="prodId" type="hidden">
+
+      <!-- Operações (planejadas / realizadas) -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
+        <div>
+          <label class="prod-input-lbl" style="font-size:12px">Total de operações planejadas</label>
+          <input id="prodOpPlan" type="number" min="0" step="1" class="prod-input" placeholder="0" onkeydown="if(event.key==='Enter')saveProdRegistry()">
+        </div>
+        <div>
+          <label class="prod-input-lbl" style="font-size:12px">Total de operações realizadas</label>
+          <input id="prodOpReal" type="number" min="0" step="1" class="prod-input" placeholder="0" onkeydown="if(event.key==='Enter')saveProdRegistry()">
+        </div>
+      </div>
+
       <div class="prod-hint">
         ⓘ A OS atual fica com as peças planejadas para este dia. Se o planejamento
         for menor que o total original, o <strong>saldo vai pro backlog</strong>
@@ -4389,10 +4402,52 @@ window.syncSolToBacklog = function() {
     }
   });
 
+  // ─── FAXINA DE DUPLICATAS: itens "principais" (sem _parentId) duplicados pro mesmo _solId ───
+  // Cenário: por algum bug anterior, allData pode ter 2 items principais (sem _parentId)
+  // representando a MESMA solicitação. Isso causa cards duplicados no backlog/calendário.
+  // Regra: pra cada _solId, mantém apenas 1 item principal. Prioridade:
+  //   1º items com _placed=true (já alocado no calendário — não mexer)
+  //   2º item com _id batendo com _solIdToBackId(solId)
+  //   3º o mais antigo (menor _id)
+  // Os saldos (com _parentId) NÃO são afetados.
+  const principaisBySolId = {};
+  allData.forEach(d => {
+    if (d._parentId || !d._fromSol || !d._solId) return;
+    const k = String(d._solId);
+    if (!principaisBySolId[k]) principaisBySolId[k] = [];
+    principaisBySolId[k].push(d);
+  });
+  Object.entries(principaisBySolId).forEach(([solId, items]) => {
+    if (items.length <= 1) return;
+    // Escolhe o item-canônico
+    let canonical = items.find(d => d._placed === true);
+    if (!canonical) {
+      const expectedId = window._solIdToBackId(solId);
+      canonical = items.find(d => d._id === expectedId);
+    }
+    if (!canonical) {
+      canonical = items.slice().sort((a, b) => (a._id || 0) - (b._id || 0))[0];
+    }
+    // Remove os outros
+    items.forEach(d => {
+      if (d === canonical) return;
+      const idx = allData.indexOf(d);
+      if (idx >= 0) {
+        console.log('[SolBridge] FAXINA -duplicata:', d._id, d.req, '(canonical é', canonical._id, ')');
+        allData.splice(idx, 1);
+        removed++;
+      }
+    });
+  });
+
   solData.forEach(s => {
     const backlogId = window._solIdToBackId(s.id);
     if (!backlogId) return;
-    const existing = allData.find(d => d._id === backlogId);
+    // Procura existing por _id (caminho normal) OU por _solId (caso _id divergiu por algum motivo).
+    // Isso impede que o sync crie uma DUPLICATA de uma OS quando ela já existe no allData
+    // (ex: depois de um split em saveProdRegistry, onde o saldo tem _solId mas _id diferente).
+    const existing = allData.find(d => d._id === backlogId)
+                  || allData.find(d => d._fromSol && String(d._solId || '') === String(s.id) && !d._parentId);
 
     if (s.status === 'Aprovação para compra') {
       // IDEMPOTENTE: sempre cria em allData se não existir, independente de _promoted.
@@ -5542,6 +5597,13 @@ function openProdModal(id) {
   input.focus();
   input.select();
   document.getElementById('prodId').value = id;
+
+  // ─── Novos campos: operações planejadas / realizadas ───
+  const opPlanInp = document.getElementById('prodOpPlan');
+  const opRealInp = document.getElementById('prodOpReal');
+  if (opPlanInp) opPlanInp.value = (d.opPlan != null && d.opPlan !== '') ? d.opPlan : '';
+  if (opRealInp) opRealInp.value = (d.opReal != null && d.opReal !== '') ? d.opReal : '';
+
   ovl.style.display = 'flex';
 }
 
@@ -5555,6 +5617,15 @@ function saveProdRegistry() {
   const qtdNova = parseInt(document.getElementById('prodQtd').value, 10) || 0;
   if (qtdNova <= 0) { toast('Informe uma quantidade > 0', 'error'); return; }
 
+  // ─── Operações: lê valores dos novos campos (vazio → undefined; aceita 0) ───
+  const opPlanRaw = document.getElementById('prodOpPlan');
+  const opRealRaw = document.getElementById('prodOpReal');
+  const opPlanVal = opPlanRaw && opPlanRaw.value !== '' ? Math.max(0, parseInt(opPlanRaw.value, 10) || 0) : null;
+  const opRealVal = opRealRaw && opRealRaw.value !== '' ? Math.max(0, parseInt(opRealRaw.value, 10) || 0) : null;
+  if (opRealVal !== null && opPlanVal !== null && opRealVal > opPlanVal) {
+    if (!confirm(`Operações realizadas (${opRealVal}) maior que planejadas (${opPlanVal}). Continuar?`)) return;
+  }
+
   const d = allData.find(x => x._id === id);
   if (!d) return;
   const qtdAtual = parseInt(d.qtd, 10) || 0;
@@ -5563,6 +5634,13 @@ function saveProdRegistry() {
   if (qtdNova > qtdOrig) {
     if (!confirm(`Você informou ${qtdNova}, mas o total original é de ${qtdOrig} peças. Continuar mesmo assim?`)) return;
   }
+
+  // ─── Persiste operações na OS atual ───
+  const opPlanAntes = d.opPlan, opRealAntes = d.opReal;
+  if (opPlanVal !== null) d.opPlan = opPlanVal; else delete d.opPlan;
+  if (opRealVal !== null) d.opReal = opRealVal; else delete d.opReal;
+  if (opPlanVal !== opPlanAntes) logEvent(d, 'OP_PLAN', String(opPlanAntes||'—'), String(opPlanVal??'—'), 'Operações planejadas atualizadas');
+  if (opRealVal !== opRealAntes) logEvent(d, 'OP_REAL', String(opRealAntes||'—'), String(opRealVal??'—'), 'Operações realizadas atualizadas');
 
   // Preserva _qtdOrig na OS atual se ainda não tem (sem NUNCA sobrescrever)
   if (!d._qtdOrig) d._qtdOrig = qtdOrig;
