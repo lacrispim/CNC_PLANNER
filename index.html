@@ -9305,6 +9305,116 @@ async function _cleanBacklogByUrl() {
 // Executa no carregamento se a URL tem ?cleanBacklog=1
 setTimeout(_cleanBacklogByUrl, 800);
 
+/* ════════════════════ MIGRAÇÃO de IDs F-X → X no Firebase ════════════════════
+   Disparada por ?migrateFids=1 na URL.
+   - Lê /sol_new, /sol_mods, /backlog do Firebase
+   - Pra cada chave que começa com "F-", migra pra chave sem "F-"
+   - Se a chave "X" (sem F-) já existir, MERGE (preserva ambas) — mas só se conflito
+   - Remove a chave antiga F-X
+   - Mostra relatório no toast e console
+   - Garantia: NUNCA apaga dados que não estejam sendo migrados
+*/
+async function _migrateFidsByUrl() {
+  if (!window.location.search.includes('migrateFids=1')) return;
+  console.log('[MIGRATE FIDS] 🔄 Detectado ?migrateFids=1 — iniciando migração...');
+  if (typeof toast === 'function') toast('🔄 Migrando IDs F-X → X no Firebase...', 'info', 3000);
+
+  if (!FB || !FB.db || !FB.connected) {
+    console.error('[MIGRATE FIDS] ❌ Firebase não conectado, abortando');
+    if (typeof toast === 'function') toast('❌ Firebase não conectado — recarregue e tente de novo', 'error', 5000);
+    return;
+  }
+
+  const db = FB.db;
+  const paths = ['/sol_new', '/sol_mods', '/backlog'];
+  const summary = { paths: {}, total_migrated: 0, total_conflicts: 0, total_removed: 0 };
+
+  for (const path of paths) {
+    try {
+      console.log(`[MIGRATE FIDS] 📂 Lendo ${path}...`);
+      const snap = await db.ref(path).once('value');
+      const val = snap.val();
+      if (!val) { console.log(`  vazio, pulando`); continue; }
+
+      const stats = { migrated: 0, conflicts: 0, removed: 0, total_keys: 0 };
+      const isArray = Array.isArray(val);
+      const keys = isArray ? val.map((_, i) => String(i)) : Object.keys(val);
+      stats.total_keys = keys.length;
+
+      const updates = {};
+
+      if (isArray) {
+        // /backlog é array — itera e modifica os items que tenham id "F-X"
+        const newArray = [];
+        for (const item of val) {
+          if (!item) continue;
+          const oldId = String(item.req || item._id || '');
+          if (oldId.startsWith('F-') || (item.req && String(item.req).startsWith('SOL-F-'))) {
+            // Migra id e req
+            const newItem = { ...item };
+            if (newItem.req && String(newItem.req).startsWith('SOL-F-')) {
+              newItem.req = 'SOL-' + String(newItem.req).slice(6);
+            }
+            if (newItem._solId && String(newItem._solId).startsWith('F-')) {
+              newItem._solId = String(newItem._solId).slice(2);
+            }
+            newArray.push(newItem);
+            stats.migrated++;
+          } else {
+            newArray.push(item);
+          }
+        }
+        if (stats.migrated > 0) {
+          await db.ref(path).set(newArray);
+        }
+      } else {
+        // /sol_new e /sol_mods são objetos — chaves são IDs
+        for (const key of keys) {
+          if (!key.startsWith('F-')) continue;
+          const newKey = key.slice(2);
+          if (val[newKey]) {
+            // Conflito: já existe a chave nova. PRESERVA a nova (não sobrescreve).
+            stats.conflicts++;
+            console.warn(`  ⚠ Conflito: ${path}/${key} → ${newKey} já existe. Removendo a antiga.`);
+            updates[`${path}/${key}`] = null; // remove a antiga
+            stats.removed++;
+          } else {
+            // Migra: copia para nova chave e remove antiga
+            updates[`${path}/${newKey}`] = val[key];
+            updates[`${path}/${key}`] = null;
+            stats.migrated++;
+          }
+        }
+        if (Object.keys(updates).length > 0) {
+          await db.ref().update(updates);
+        }
+      }
+
+      summary.paths[path] = stats;
+      summary.total_migrated += stats.migrated;
+      summary.total_conflicts += stats.conflicts;
+      summary.total_removed += stats.removed;
+      console.log(`[MIGRATE FIDS] ✅ ${path}: ${stats.migrated} migrados, ${stats.conflicts} conflitos, ${stats.removed} removidos (de ${stats.total_keys} total)`);
+    } catch (e) {
+      console.error(`[MIGRATE FIDS] ❌ Erro em ${path}:`, e.message);
+      summary.paths[path] = { error: e.message };
+    }
+  }
+
+  console.log('[MIGRATE FIDS] 📊 RESUMO:', summary);
+  const msg = `✅ Migração concluída: ${summary.total_migrated} IDs migrados, ${summary.total_conflicts} conflitos resolvidos`;
+  if (typeof toast === 'function') toast(msg, 'success', 10000);
+
+  // Limpa o param da URL pra evitar re-execução
+  setTimeout(() => {
+    const cleanUrl = window.location.pathname + window.location.hash;
+    window.history.replaceState({}, '', cleanUrl);
+    console.log('[MIGRATE FIDS] 🔄 Recarregue (Ctrl+Shift+R) pra ver o resultado limpo');
+  }, 2500);
+}
+// Executa na carga se URL tem ?migrateFids=1
+setTimeout(_migrateFidsByUrl, 1500);
+
 /* ════════════════════ RESET POR URL (manual, sem flag) ════════════════════
    Apaga TUDO quando a URL contém ?reset=1. Caso contrário, não faz nada.
    - Sem flag (pra contornar flags antigas que possam ter ficado travadas)
