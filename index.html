@@ -2443,6 +2443,10 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
           <span class="tb-more-ico">📦</span>
           <span>Exportar TUDO para Iron (.json)</span>
         </button>
+        <button class="tb-more-item" onclick="cleanFirebaseNow();tbMoreClose()" style="color:#7c2d12;font-weight:600;background:#fef3c7">
+          <span class="tb-more-ico">🧹</span>
+          <span>Limpar duplicatas (executar plano)</span>
+        </button>
       </div>
     </div>
     <!-- Mobile: botão menu -->
@@ -9683,6 +9687,91 @@ window.exportFullState = async function() {
           `Anexe ele na próxima mensagem pro Iron.`);
   } catch (e) {
     alert(`❌ ERRO ao exportar:\n${e.message}`);
+  }
+};
+
+// ═════════ LIMPEZA DEFINITIVA (executar plano combinado com Lari em 19/06/2026) ═════════
+// Apaga 36 duplicatas de /sol_new, migra 3 IDs em /sol_mods e apaga 7 órfãs.
+window.cleanFirebaseNow = async function() {
+  const PLANO = `🧹 LIMPEZA DEFINITIVA — Plano aprovado
+
+1. APAGAR /sol_new (36 entradas — todas duplicatas do RAW_DATA)
+
+2. MIGRAR em /sol_mods (preservando edições):
+   • F-15 → 15 (Rejeitado, formsRef=15)
+   • FORMS 3D 127 → 127 (Aço 1045, cu=543.6)
+   • MRP-220 → 220 (Pendente)
+
+3. APAGAR 7 órfãs em /sol_mods (sem solicitação correspondente):
+   • 613, 614, 724 (ALUMÍNIO NAVAL / Aço 1020)
+   • MRP, ROW-171, ROW-172, ROW-26 (testes antigos)
+
+4. MANTER /backlog intacto (7 cards OK)
+
+Confirma execução?`;
+  if (!confirm(PLANO)) return;
+
+  if (!FB || !FB.db || !FB.connected) {
+    alert('❌ Firebase não conectado. Recarregue e tente novamente.');
+    return;
+  }
+  const db = FB.db;
+  const updates = {};
+  const log = [];
+
+  try {
+    // 1) Apagar /sol_new inteiro
+    updates['/sol_new'] = null;
+    log.push('✓ /sol_new marcado pra apagar (36 entradas)');
+
+    // 2) Migrar 3 chaves em /sol_mods (lê → escreve nova → apaga antiga)
+    const solModsSnap = await db.ref('/sol_mods').once('value');
+    const sm = solModsSnap.val() || {};
+    const MIGRATIONS = {
+      'F-15': '15',
+      'FORMS 3D 127': '127',
+      'MRP-220': '220'
+    };
+    let migrated = 0;
+    for (const [oldKey, newKey] of Object.entries(MIGRATIONS)) {
+      if (sm[oldKey]) {
+        // Se já existe no novo, faz merge (preservando ambos)
+        const merged = { ...(sm[newKey] || {}), ...sm[oldKey] };
+        updates[`/sol_mods/${newKey}`] = merged;
+        updates[`/sol_mods/${oldKey}`] = null;
+        migrated++;
+        log.push(`✓ Migrado: ${oldKey} → ${newKey}`);
+      } else {
+        log.push(`⊘ Pulado: ${oldKey} (não encontrado)`);
+      }
+    }
+
+    // 3) Apagar 7 órfãs em /sol_mods
+    const ORFAS = ['613', '614', '724', 'MRP', 'ROW-171', 'ROW-172', 'ROW-26'];
+    let orfasDel = 0;
+    for (const orfa of ORFAS) {
+      if (sm[orfa]) {
+        updates[`/sol_mods/${orfa}`] = null;
+        orfasDel++;
+        log.push(`✓ Apagada órfã: ${orfa}`);
+      } else {
+        log.push(`⊘ Pulada órfã: ${orfa} (não encontrada)`);
+      }
+    }
+
+    // Aplica todas as mudanças em UMA operação atômica
+    await db.ref().update(updates);
+    log.push('');
+    log.push('✅ TUDO APLICADO!');
+    log.push(`   • /sol_new apagado`);
+    log.push(`   • ${migrated} migradas`);
+    log.push(`   • ${orfasDel} órfãs apagadas`);
+
+    alert(log.join('\n') + '\n\nA página vai recarregar pra mostrar o resultado limpo.');
+    setTimeout(() => location.reload(), 800);
+  } catch (e) {
+    alert(`❌ ERRO durante limpeza:\n${e.message}\n\nDetalhes parciais:\n${log.join('\n')}`);
+    console.error('[CLEAN] Erro:', e);
   }
 };
 
