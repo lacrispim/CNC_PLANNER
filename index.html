@@ -11156,7 +11156,7 @@ function renderStats() {
 }
 
 function go() {
-  const q = document.getElementById('fsearch').value.toLowerCase();
+  const q = document.getElementById('fsearch').value.toLowerCase().trim();
   const pl = document.getElementById('fpl').value;
   const ar = document.getElementById('far').value;
   const pr = document.getElementById('fpr').value;
@@ -11164,6 +11164,41 @@ function go() {
   const yr = (document.getElementById('fyr') || {}).value || '';
   const mo = (document.getElementById('fmo') || {}).value || '';
   const dy = (document.getElementById('fdy') || {}).value || '';
+  // Função de score de relevância (maior = mais relevante)
+  // Só roda quando há termo de busca; calcula um ranking inteligente.
+  function _matchScore(r, q) {
+    if (!q) return 0;
+    const id = String(r.id || '').toLowerCase();
+    const fref = String(r.formsRef || '').toLowerCase();
+    const peca = String(r.p || '').toLowerCase();
+    const cd = String(r.cd || '').toLowerCase();
+    const sp = String(r.sp || '').toLowerCase();
+    const sl = String(r.sl || '').toLowerCase();
+    const os = String(r.os || '').toLowerCase();
+    let score = 0;
+    // Match EXATO no id ou formsRef → maior prioridade
+    if (id === q) score += 1000;
+    if (fref === q) score += 1000;
+    // Match EXATO em sp/os
+    if (sp === q) score += 800;
+    if (os === q) score += 800;
+    // id ou formsRef COMEÇA com o termo
+    if (id.startsWith(q)) score += 500;
+    if (fref.startsWith(q)) score += 500;
+    // Termo aparece no id ou formsRef
+    if (id.includes(q)) score += 200;
+    if (fref.includes(q)) score += 200;
+    // Match no SAP / código desenho / OS
+    if (sp.includes(q)) score += 100;
+    if (cd.includes(q)) score += 100;
+    if (os.includes(q)) score += 100;
+    // Peça começa com o termo → mais relevante que só conter
+    if (peca.startsWith(q)) score += 80;
+    else if (peca.includes(q)) score += 40;
+    // Solicitante
+    if (sl.includes(q)) score += 20;
+    return score;
+  }
   filtered = data.filter(r => {
     if (pl && r.pl !== pl) return false;
     if (ar && r.ar !== ar) return false;
@@ -11180,9 +11215,14 @@ function go() {
     if (q) {
       const hay = [r.p,r.cd,r.sp,r.sl,r.id,r.os,r.formsRef].join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
+      r._matchScore = _matchScore(r, q);
+    } else {
+      r._matchScore = 0;
     }
     return true;
   });
+  // Marca se há busca ativa pra doSort priorizar relevância
+  window._hasSearchQuery = !!q;
   doSort(); page=1; render();
 }
 
@@ -11195,7 +11235,14 @@ function sb(f) {
 }
 
 function doSort() {
+  // Se há termo de busca, RELEVÂNCIA tem prioridade sobre o campo ordenado
+  const hasQuery = window._hasSearchQuery;
   filtered.sort((a,b)=>{
+    if (hasQuery) {
+      const sa = a._matchScore || 0;
+      const sb_ = b._matchScore || 0;
+      if (sa !== sb_) return sb_ - sa;  // maior score primeiro
+    }
     let av=a[sortField]||'', bv=b[sortField]||'';
     if (['id','qt','cu'].includes(sortField)) {
       av = parseFloat(String(av).replace(',','.'))||0;
