@@ -2430,6 +2430,19 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
           <span class="tb-more-ico">⚙</span>
           <span data-i18n="topbar.config">Configurações</span>
         </button>
+        <div class="tb-more-divider"></div>
+        <button class="tb-more-item" onclick="manualMigrateFids();tbMoreClose()" style="color:#dc2626;font-weight:600">
+          <span class="tb-more-ico">🔄</span>
+          <span>Corrigir IDs duplicados (F-X → X)</span>
+        </button>
+        <button class="tb-more-item" onclick="diagnoseFirebase();tbMoreClose()" style="color:#1e40af;font-weight:600">
+          <span class="tb-more-ico">🔍</span>
+          <span>Diagnóstico: por que tem duplicatas?</span>
+        </button>
+        <button class="tb-more-item" onclick="exportFullState();tbMoreClose()" style="color:#15803d;font-weight:600">
+          <span class="tb-more-ico">📦</span>
+          <span>Exportar TUDO para Iron (.json)</span>
+        </button>
       </div>
     </div>
     <!-- Mobile: botão menu -->
@@ -9146,6 +9159,35 @@ const FB = (function() {
     _saveDebounced[path] = setTimeout(() => save(path, value), delay);
   }
 
+  /* ─── Salvamento GRANULAR (uma chave por vez) ───
+     Em vez de mandar /sol_mods inteiro (que pode ter MBs), manda só /sol_mods/M00002.
+     Isso evita timeouts, race conditions e quase sempre completa em <500ms.
+     - Mostra toast vermelho se falhar (Lari vai saber na hora)
+     - Suporta debounce por (path+key) pra não saturar em digitação rápida */
+  const _saveKeyDebounced = {};
+  function saveKey(path, key, value, delay = 600) {
+    const k = path + '|' + key;
+    if (_saveKeyDebounced[k]) clearTimeout(_saveKeyDebounced[k]);
+    _saveKeyDebounced[k] = setTimeout(() => {
+      if (!db || !connected) {
+        console.warn('[FB] saveKey offline — não enviado:', path, key);
+        if (typeof toast === 'function') toast('⚠ Offline — alteração só local, não foi pro Firebase', 'warning', 4000);
+        return;
+      }
+      _stats.writes++;
+      const fullPath = path + '/' + key;
+      db.ref(fullPath).set(value).then(() => {
+        markSync();
+        console.log('[FB] saveKey OK:', fullPath);
+      }).catch(e => {
+        _stats.failedWrites++;
+        reportError('saveKey ' + fullPath, e);
+        console.error('[FB] ❌ saveKey FALHOU:', fullPath, e.code, e.message);
+        if (typeof toast === 'function') toast('❌ Erro ao salvar no Firebase: ' + (e.code || e.message), 'error', 6000);
+      });
+    }, delay);
+  }
+
   /* ─── Listener em tempo real ───
      Quando alguém atualiza /backlog em outro dispositivo, callback é chamado
      com os dados novos.
@@ -9178,7 +9220,7 @@ const FB = (function() {
       .catch(e => { _stats.failedReads++; reportError('loadAll', e); return null; });
   }
 
-  return { init, save, saveDebounced, listen, suppressListeners, loadAll, setStatus,
+  return { init, save, saveDebounced, saveKey, listen, suppressListeners, loadAll, setStatus,
            healthCheck, reportError,
            isConnected: () => connected,
            getStats: () => ({ ..._stats, lastError: _lastError, lastSyncAt: _lastSyncAt }) };
@@ -9415,6 +9457,235 @@ async function _migrateFidsByUrl() {
 // Executa na carga se URL tem ?migrateFids=1
 setTimeout(_migrateFidsByUrl, 1500);
 
+// ═════════ MIGRAÇÃO MANUAL (botão no menu superior) ═════════
+// Versão com ALERTS visuais (não só toast) pra confirmar o resultado claramente.
+window.manualMigrateFids = async function() {
+  if (!confirm('🔄 CORRIGIR DUPLICATAS\n\nVou procurar IDs com prefixo "F-" no Firebase e migrar para o formato novo (sem F-).\n\nIsso vai eliminar duplicatas que estavam aparecendo.\n\nConfirma?')) {
+    return;
+  }
+
+  if (!FB || !FB.db) {
+    alert('❌ Firebase não está carregado.\n\nRecarregue a página (Ctrl+Shift+R) e tente de novo.');
+    return;
+  }
+  if (!FB.connected) {
+    alert('❌ Firebase NÃO está conectado.\n\nVerifique sua internet e tente novamente.');
+    return;
+  }
+
+  const db = FB.db;
+  const paths = ['/sol_new', '/sol_mods', '/backlog'];
+  let totalMigrated = 0, totalConflicts = 0, totalRemoved = 0;
+  let detalhes = [];
+
+  for (const path of paths) {
+    try {
+      const snap = await db.ref(path).once('value');
+      const val = snap.val();
+      if (!val) { detalhes.push(`${path}: VAZIO`); continue; }
+
+      const isArray = Array.isArray(val);
+      let migrated = 0, conflicts = 0, removed = 0;
+
+      if (isArray) {
+        // /backlog: array
+        const newArray = [];
+        for (const item of val) {
+          if (!item) continue;
+          const newItem = { ...item };
+          let touched = false;
+          if (newItem.req && String(newItem.req).startsWith('SOL-F-')) {
+            newItem.req = 'SOL-' + String(newItem.req).slice(6);
+            touched = true;
+          }
+          if (newItem._solId && String(newItem._solId).startsWith('F-')) {
+            newItem._solId = String(newItem._solId).slice(2);
+            touched = true;
+          }
+          if (touched) migrated++;
+          newArray.push(newItem);
+        }
+        if (migrated > 0) await db.ref(path).set(newArray);
+      } else {
+        // /sol_new e /sol_mods: objetos
+        const updates = {};
+        const keys = Object.keys(val);
+        for (const key of keys) {
+          if (!key.startsWith('F-')) continue;
+          const newKey = key.slice(2);
+          if (val[newKey]) {
+            conflicts++;
+            updates[`${path}/${key}`] = null;
+            removed++;
+          } else {
+            updates[`${path}/${newKey}`] = val[key];
+            updates[`${path}/${key}`] = null;
+            migrated++;
+          }
+        }
+        if (Object.keys(updates).length > 0) {
+          await db.ref().update(updates);
+        }
+      }
+
+      totalMigrated += migrated;
+      totalConflicts += conflicts;
+      totalRemoved += removed;
+      detalhes.push(`${path}: ${migrated} migrados, ${conflicts} conflitos`);
+    } catch (e) {
+      detalhes.push(`${path}: ❌ ERRO — ${e.message}`);
+    }
+  }
+
+  const msg = `✅ MIGRAÇÃO CONCLUÍDA\n\n` +
+              `Total migrados: ${totalMigrated}\n` +
+              `Conflitos resolvidos: ${totalConflicts}\n` +
+              `Removidos: ${totalRemoved}\n\n` +
+              `Detalhes por caminho:\n` +
+              detalhes.map(d => '  • ' + d).join('\n') +
+              `\n\nA página vai recarregar pra mostrar o resultado limpo.`;
+  alert(msg);
+  setTimeout(() => location.reload(), 500);
+};
+
+// ═════════ DIAGNÓSTICO: por que tem duplicatas? ═════════
+// Mostra um resumo CLARO do estado do Firebase pra eu (Iron) ver o que está duplicando.
+window.diagnoseFirebase = async function() {
+  if (!FB || !FB.db) { alert('❌ Firebase não carregado'); return; }
+  if (!FB.connected) { alert('❌ Firebase não conectado'); return; }
+
+  const db = FB.db;
+  const report = [];
+  report.push('🔍 DIAGNÓSTICO COMPLETO\n');
+
+  try {
+    // 1. RAW_DATA local
+    const rawIds = new Set(typeof RAW_DATA !== 'undefined' ? RAW_DATA.map(r => String(r.id)) : []);
+    report.push(`📦 RAW_DATA (código): ${rawIds.size} solicitações`);
+
+    // 2. /sol_new (solicitações criadas pelo time no app)
+    const solNewSnap = await db.ref('/sol_new').once('value');
+    const solNew = solNewSnap.val() || {};
+    const solNewKeys = Object.keys(solNew);
+    const solNewWithFPrefix = solNewKeys.filter(k => k.startsWith('F-'));
+    const conflictsRawSolNew = solNewKeys.filter(k => rawIds.has(k));
+    report.push(`\n☁ /sol_new no Firebase: ${solNewKeys.length} entradas`);
+    report.push(`   • Com prefixo F-: ${solNewWithFPrefix.length}`);
+    report.push(`   • IDs que TAMBÉM existem no RAW_DATA (= duplicata!): ${conflictsRawSolNew.length}`);
+    if (conflictsRawSolNew.length > 0) {
+      report.push(`   • EXEMPLOS: ${conflictsRawSolNew.slice(0, 10).join(', ')}`);
+    }
+
+    // 3. /sol_mods (edições)
+    const solModsSnap = await db.ref('/sol_mods').once('value');
+    const solMods = solModsSnap.val() || {};
+    const solModsKeys = Object.keys(solMods);
+    const solModsWithFPrefix = solModsKeys.filter(k => k.startsWith('F-'));
+    report.push(`\n📝 /sol_mods no Firebase: ${solModsKeys.length} edições`);
+    report.push(`   • Com prefixo F-: ${solModsWithFPrefix.length}`);
+    if (solModsWithFPrefix.length > 0) {
+      report.push(`   • EXEMPLOS: ${solModsWithFPrefix.slice(0, 5).join(', ')}`);
+    }
+
+    // 4. /backlog (cards do calendário)
+    const backlogSnap = await db.ref('/backlog').once('value');
+    const backlog = backlogSnap.val() || [];
+    const backlogArr = Array.isArray(backlog) ? backlog.filter(Boolean) : Object.values(backlog).filter(Boolean);
+    const backlogWithFReq = backlogArr.filter(d => d && d.req && String(d.req).startsWith('SOL-F-'));
+    const backlogWithFSolId = backlogArr.filter(d => d && d._solId && String(d._solId).startsWith('F-'));
+    report.push(`\n📅 /backlog no Firebase: ${backlogArr.length} cards`);
+    report.push(`   • Com req SOL-F-: ${backlogWithFReq.length}`);
+    report.push(`   • Com _solId F-: ${backlogWithFSolId.length}`);
+    // Duplicatas no backlog: mesma req ou mesmo _solId
+    const reqCount = {};
+    backlogArr.forEach(d => {
+      if (!d || !d.req) return;
+      reqCount[d.req] = (reqCount[d.req] || 0) + 1;
+    });
+    const reqDups = Object.entries(reqCount).filter(([_,c]) => c > 1);
+    report.push(`   • req DUPLICADOS no backlog: ${reqDups.length}`);
+    if (reqDups.length > 0) {
+      report.push(`   • EXEMPLOS: ${reqDups.slice(0, 5).map(([k,c]) => `${k} (${c}x)`).join(', ')}`);
+    }
+
+    // 5. Data atual (no app) - quantas solicitações aparecem
+    if (typeof data !== 'undefined') {
+      const ids = data.map(d => String(d.id));
+      const idCount = {};
+      ids.forEach(i => { idCount[i] = (idCount[i] || 0) + 1; });
+      const dupAppIds = Object.entries(idCount).filter(([_,c]) => c > 1);
+      report.push(`\n📊 DATA no app: ${ids.length} solicitações`);
+      report.push(`   • IDs DUPLICADOS no app (= o que você vê!): ${dupAppIds.length}`);
+      if (dupAppIds.length > 0) {
+        report.push(`   • EXEMPLOS: ${dupAppIds.slice(0, 10).map(([k,c]) => `${k} (${c}x)`).join(', ')}`);
+      }
+    }
+  } catch (e) {
+    report.push(`\n❌ ERRO: ${e.message}`);
+  }
+
+  alert(report.join('\n'));
+  // Imprime no console também pra eu poder copiar mais fácil
+  console.log(report.join('\n'));
+};
+
+// ═════════ EXPORTAR ESTADO COMPLETO ═════════
+// Gera um arquivo JSON com TUDO do app + Firebase. Lari me manda esse arquivo,
+// eu consolido num RAW_DATA novo e limpo (sem duplicatas).
+window.exportFullState = async function() {
+  if (!FB || !FB.db) { alert('❌ Firebase não carregado'); return; }
+  if (!FB.connected) { alert('❌ Firebase não conectado'); return; }
+
+  if (!confirm('📦 EXPORTAR ESTADO COMPLETO\n\nVou gerar um arquivo .json com:\n\n• RAW_DATA do código (785 solicitações)\n• /sol_new do Firebase (criadas pelo time)\n• /sol_mods do Firebase (edições)\n• /backlog do Firebase (calendário)\n\nVocê me manda esse arquivo e eu consolido num RAW_DATA limpo, sem duplicatas.\n\nConfirma?')) return;
+
+  const db = FB.db;
+  try {
+    const [solNewSnap, solModsSnap, backlogSnap] = await Promise.all([
+      db.ref('/sol_new').once('value'),
+      db.ref('/sol_mods').once('value'),
+      db.ref('/backlog').once('value')
+    ]);
+
+    const payload = {
+      _meta: {
+        exported_at: new Date().toISOString(),
+        from_user: localStorage.getItem('cnc_user_name_v1') || 'Anônimo',
+        firebase_project: (typeof FIREBASE_CONFIG !== 'undefined' ? FIREBASE_CONFIG.projectId : '?')
+      },
+      raw_data: typeof RAW_DATA !== 'undefined' ? RAW_DATA : null,
+      raw_data_count: typeof RAW_DATA !== 'undefined' ? RAW_DATA.length : 0,
+      sol_new: solNewSnap.val() || {},
+      sol_new_count: Object.keys(solNewSnap.val() || {}).length,
+      sol_mods: solModsSnap.val() || {},
+      sol_mods_count: Object.keys(solModsSnap.val() || {}).length,
+      backlog: backlogSnap.val() || [],
+      backlog_count: Array.isArray(backlogSnap.val()) ? backlogSnap.val().filter(Boolean).length : 0
+    };
+
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const dt = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cnc_export_${dt}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    alert(`✅ EXPORTAÇÃO CONCLUÍDA\n\nArquivo: cnc_export_${dt}.json\n\n` +
+          `• RAW_DATA: ${payload.raw_data_count}\n` +
+          `• Sol_new: ${payload.sol_new_count}\n` +
+          `• Sol_mods: ${payload.sol_mods_count}\n` +
+          `• Backlog: ${payload.backlog_count}\n\n` +
+          `O arquivo foi baixado pra sua pasta de Downloads.\n` +
+          `Anexe ele na próxima mensagem pro Iron.`);
+  } catch (e) {
+    alert(`❌ ERRO ao exportar:\n${e.message}`);
+  }
+};
+
 /* ════════════════════ RESET POR URL (manual, sem flag) ════════════════════
    Apaga TUDO quando a URL contém ?reset=1. Caso contrário, não faz nada.
    - Sem flag (pra contornar flags antigas que possam ter ficado travadas)
@@ -9485,6 +9756,9 @@ setTimeout(_resetByUrl, 800);
     _origSet(key, value);  // sempre salva local primeiro
     const fbPath = FB_KEY_MAP[key];
     if (fbPath && typeof FB !== 'undefined' && FB.isConnected && FB.isConnected()) {
+      // OTIMIZAÇÃO: pra /sol_mods, o _persistRec já manda chave a chave via FB.saveKey,
+      // então o interceptor PULA esse path (evita escrita dupla e payloads gigantes).
+      if (fbPath === '/sol_mods' && typeof FB.saveKey === 'function') return;
       try {
         const data = JSON.parse(value);
         FB.saveDebounced(fbPath, data, 1200);
@@ -10457,7 +10731,14 @@ function _persistRec(r){
   if (r.pedMat === undefined) delete m[r.id].pedMat;
   if (r.prevForn === undefined) delete m[r.id].prevForn;
   _saveMods(m);
-  _solFbSaveDebounced(m);
+  // GRANULAR: envia APENAS essa chave pro Firebase (sol_mods/M00002), não o objeto inteiro.
+  // Isso evita timeout em payloads grandes e race conditions entre escritas paralelas.
+  if (typeof FB !== 'undefined' && FB.saveKey) {
+    FB.saveKey('/sol_mods', r.id, m[r.id]);
+  } else {
+    // Fallback: se saveKey não disponível, usa o caminho antigo
+    _solFbSaveDebounced(m);
+  }
 }
 
 // ─── Edita o custo unitário a partir do detalhe do formulário ───
