@@ -2451,6 +2451,10 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
           <span class="tb-more-ico">♻️</span>
           <span>Limpar sol_new já no código (anti-duplicata)</span>
         </button>
+        <button class="tb-more-item" onclick="backfillDrawingsToFirebase(false);tbMoreClose()" style="color:#1e40af;font-weight:600">
+          <span class="tb-more-ico">🖼️</span>
+          <span>Sincronizar desenhos deste navegador p/ a nuvem</span>
+        </button>
       </div>
     </div>
     <!-- Mobile: botão menu -->
@@ -3111,6 +3115,7 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
     <div class="sol-topbar-r">
       <button class="sol-btn-list" id="btnList" onclick="Sol && Sol.openList()" data-i18n-title="sol.materiaisCompraTitle" title="Lista de materiais a comprar — solicitações com status Aprovação para compra">🛒 <span data-i18n="sol.materiaisCompra">Materiais para Compra</span> <span id="btnListCount" class="sol-btn-list-count">0</span></button>
       <button class="sol-btn-bulk" onclick="Sol && Sol.openBulkAttach()">↑ <span data-i18n="sol.atrelarDes">Atrelar desenhos</span></button>
+      <button class="sol-btn-bulk" onclick="exportSolExcel()" title="Exportar as solicitações (com todos os campos do detalhe) para uma planilha Excel">⬇ Exportar Excel</button>
       <button class="sol-btn-new" onclick="Sol && Sol.openNew()">+ <span data-i18n="sol.novaSolicit">Nova solicitação</span></button>
     </div>
   </div>
@@ -5136,13 +5141,16 @@ function init(){allData=SEED.map((d,i)=>({...d,_id:i,_day:d.data,tTorno:0,tCentr
 
 /* ── PDF.js: carregar UMA vez e cachear globalmente ── */
 let _pdfJsReady=false;
+// Worker DEVE apontar pro arquivo no CDN. Deixar workerSrc='' faz o PDF.js 3.x
+// tentar um "fake worker" que costuma falhar → PDFs não renderizam.
+const _PDFJS_WORKER='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 function ensurePdfJs(){
-  if(window.pdfjsLib){_pdfJsReady=true;window.pdfjsLib.GlobalWorkerOptions.workerSrc='';return Promise.resolve();}
+  if(window.pdfjsLib){_pdfJsReady=true;window.pdfjsLib.GlobalWorkerOptions.workerSrc=_PDFJS_WORKER;return Promise.resolve();}
   if(window._pdfJsLoading) return window._pdfJsLoading;
   window._pdfJsLoading=new Promise((res,rej)=>{
     const s=document.createElement('script');
     s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-    s.onload=()=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc='';_pdfJsReady=true;res();};
+    s.onload=()=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc=_PDFJS_WORKER;_pdfJsReady=true;res();};
     s.onerror=rej;
     document.head.appendChild(s);
   });
@@ -6651,6 +6659,8 @@ function saveRealTime(id, machine, val){
 function spRemoveDraw(id){
   const d=allData.find(x=>x._id===id);if(!d)return;
   d._drawing=null;d._drawingName=null;d._drawingType=null;
+  try{ idbDeleteDrawing(d._id); }catch(e){}
+  try{ fbDeleteDrawing(d._id); }catch(e){}
   renderSP(d);rebuildCal();render();
 }
 function spViewDraw(id){
@@ -7905,7 +7915,8 @@ async function renderPdfThumb(itemId, b64){
     if(placeholder) placeholder.style.display='none';
     canvas.style.display='block';
   }catch(e){
-    // Thumb failed — placeholder stays, full viewer still works
+    // Thumb falhou — placeholder permanece, viewer completo ainda funciona.
+    console.warn('[renderPdfThumb] falhou p/ item', itemId, '—', e && e.message || e);
   }
 }
 
@@ -9250,7 +9261,15 @@ const FB = (function() {
       .catch(e => { _stats.failedReads++; reportError('loadAll', e); return null; });
   }
 
-  return { init, save, saveDebounced, saveKey, listen, suppressListeners, loadAll, setStatus,
+  /* ─── Lê UM caminho específico (uma vez) ─── usado p/ carregar desenhos sob demanda */
+  function loadPath(path) {
+    if (!db) return Promise.resolve(null);
+    _stats.reads++;
+    return db.ref(path).once('value').then(snap => { markSync(); return snap.val(); })
+      .catch(e => { _stats.failedReads++; reportError('loadPath ' + path, e); return null; });
+  }
+
+  return { init, save, saveDebounced, saveKey, listen, suppressListeners, loadAll, loadPath, setStatus,
            healthCheck, reportError,
            isConnected: () => connected,
            getStats: () => ({ ..._stats, lastError: _lastError, lastSyncAt: _lastSyncAt }) };
@@ -10317,8 +10336,143 @@ function fbBuildPayload(){ return null; }
 function fbSave(){ /* no-op: autoSave já persiste em localStorage */ }
 async function fbLoad(force){ return false; /* sem servidor, nada pra carregar */ }
 function fbListen(){ /* no-op */ }
-async function fbSaveDrawing(){ /* arquivo fica só em indexedDB, já existente */ }
-async function fbLoadDrawing(){ return null; }
+// ─── Sincronização de desenhos via Firebase (/drawings) ─────────────────────
+// Os bytes do PDF são salvos no Firebase; em arquivos grandes, são FATIADOS em
+// pedaços (/drawing_chunks) p/ evitar o write gigante que trava o Realtime DB.
+// Chave saneada porque o Firebase não aceita . # $ [ ] / em chaves.
+function _drawKey(id){ return String(id).replace(/[.#$\[\]\/]/g, '_'); }
+const _DRAW_CHUNK = 256 * 1024;          // tamanho de cada fatia do base64 (256KB)
+const _DRAW_INLINE_MAX = 512 * 1024;     // até 512KB salva inteiro (sem fatiar)
+const _DRAW_ABS_MAX = 60 * 1024 * 1024;  // trava de sanidade: ~60MB base64
+
+async function fbSaveDrawing(itemId, b64, name, type){
+  try{
+    if(!b64 || typeof FB === 'undefined' || !FB.saveKey) return;
+    const key = _drawKey(itemId);
+    if(b64.length > _DRAW_ABS_MAX){
+      console.warn('[fbSaveDrawing] arquivo absurdamente grande (', (b64.length/1024/1024).toFixed(1), 'MB ) — ignorado.');
+      if(typeof toast === 'function') toast('⚠ Arquivo grande demais (>45MB). Não foi sincronizado.', 'warn', 5000);
+      return;
+    }
+    // Arquivo pequeno: salva inteiro (compatível com formato antigo).
+    if(b64.length <= _DRAW_INLINE_MAX){
+      FB.saveKey('/drawings', key, { b64, name: name||'', type: type||'application/pdf', savedAt: Date.now() }, 50);
+      console.log('[fbSaveDrawing] inteiro → /drawings/' + key, '(', (b64.length/1024).toFixed(0), 'KB )');
+      return;
+    }
+    // Arquivo grande: FATIA em pedaços e grava cada um separadamente.
+    const n = Math.ceil(b64.length / _DRAW_CHUNK);
+    for(let i = 0; i < n; i++){
+      const part = b64.slice(i * _DRAW_CHUNK, (i + 1) * _DRAW_CHUNK);
+      // Stagger leve no delay p/ não disparar tudo no mesmo instante.
+      FB.saveKey('/drawing_chunks/' + key, String(i), part, 40 + i * 8);
+    }
+    // Metadado por ÚLTIMO (delay maior) — só fica "válido" quando os chunks já foram.
+    // set() sobrescreve o nó inteiro, removendo qualquer b64 inteiro antigo.
+    FB.saveKey('/drawings', key, { name: name||'', type: type||'application/pdf', savedAt: Date.now(), chunks: n }, 60 + n * 8 + 120);
+    console.log('[fbSaveDrawing] fatiado em', n, 'pedaços → /drawing_chunks/' + key, '(', (b64.length/1024).toFixed(0), 'KB )');
+  }catch(e){ console.warn('[fbSaveDrawing] falhou:', e && e.message || e); }
+}
+
+async function fbLoadDrawing(itemId){
+  try{
+    if(typeof FB === 'undefined' || !FB.loadPath) return null;
+    const key = _drawKey(itemId);
+    const meta = await FB.loadPath('/drawings/' + key);
+    if(!meta) return null;
+    // Formato antigo / arquivo pequeno: b64 inteiro no próprio nó.
+    if(meta.b64) return { b64: meta.b64, name: meta.name, type: meta.type };
+    // Formato fatiado: remonta os pedaços em ordem.
+    if(meta.chunks){
+      const obj = await FB.loadPath('/drawing_chunks/' + key);
+      if(!obj) return null;
+      let b64 = '';
+      for(let i = 0; i < meta.chunks; i++){
+        const part = obj[i] != null ? obj[i] : obj[String(i)];
+        if(part == null){
+          console.warn('[fbLoadDrawing] pedaço', i, 'faltando p/', key, '— desenho incompleto');
+          return null;
+        }
+        b64 += part;
+      }
+      return { b64, name: meta.name, type: meta.type };
+    }
+    return null;
+  }catch(e){ console.warn('[fbLoadDrawing] falhou:', e && e.message || e); return null; }
+}
+
+// Remove o desenho do Firebase (metadado + pedaços) e do IndexedDB local.
+function fbDeleteDrawing(itemId){
+  try{
+    if(typeof FB === 'undefined' || !FB.save) return;
+    const key = _drawKey(itemId);
+    FB.save('/drawings/' + key, null);
+    FB.save('/drawing_chunks/' + key, null);
+    console.log('[fbDeleteDrawing] removido /drawings/' + key);
+  }catch(e){ console.warn('[fbDeleteDrawing] falhou:', e && e.message || e); }
+}
+
+// Garante que d._drawing está carregado: memória → IndexedDB local → Firebase.
+// Quando vem do Firebase, cacheia no IndexedDB local p/ ficar rápido depois.
+// Retorna true se conseguiu carregar o desenho.
+async function ensureDrawing(d){
+  if(!d) return false;
+  if(d._drawing) return true;
+  // 1) IndexedDB local
+  try{
+    const idb = await idbLoadDrawing(d._id);
+    if(idb && idb.b64){
+      d._drawing = idb.b64;
+      d._drawingName = d._drawingName || idb.name;
+      d._drawingType = idb.type || d._drawingType || 'application/pdf';
+      return true;
+    }
+  }catch(e){}
+  // 2) Firebase (chave por _id; fallback p/ chave do dwLib 'dw_<req>')
+  try{
+    let fb = await fbLoadDrawing(d._id);
+    if((!fb || !fb.b64) && d.req) fb = await fbLoadDrawing('dw_' + d.req);
+    if(fb && fb.b64){
+      d._drawing = fb.b64;
+      d._drawingName = d._drawingName || fb.name;
+      d._drawingType = fb.type || d._drawingType || 'application/pdf';
+      // cacheia local p/ acelerar próximas aberturas neste navegador
+      try{ idbSaveDrawing(d._id, fb.b64, d._drawingName, d._drawingType); }catch(e){}
+      return true;
+    }
+  }catch(e){ console.warn('[ensureDrawing] Firebase erro:', e && e.message || e); }
+  return false;
+}
+
+// Envia p/ o Firebase todos os desenhos que existem só no IndexedDB local.
+// Necessário p/ desenhos subidos ANTES desta correção (que nunca foram pro Firebase).
+// Seguro rodar em qualquer navegador: quem não tem desenhos local não envia nada.
+async function backfillDrawingsToFirebase(silent){
+  try{
+    if(typeof FB === 'undefined' || !FB.saveKey){ if(!silent) alert('Firebase indisponível.'); return; }
+    const all = await idbLoadAllDrawings();
+    const keys = Object.keys(all||{});
+    if(!keys.length){ if(!silent) alert('Nenhum desenho salvo localmente neste navegador para enviar.'); return; }
+    let sent = 0, skipped = 0;
+    for(const k of keys){
+      const rec = all[k];
+      if(rec && rec.b64){
+        if(rec.b64.length > _DRAW_ABS_MAX){ skipped++; continue; }
+        // k já é a chave do item (_id) ou 'dw_<req>'. fbSaveDrawing fatia sozinho se grande.
+        await fbSaveDrawing(k, rec.b64, rec.name, rec.type);
+        sent++;
+      }
+    }
+    try{ localStorage.setItem('cnc_drawings_backfilled_v1', '1'); }catch(e){}
+    console.log('[backfillDrawings] enviados:', sent, '| ignorados (grandes):', skipped);
+    if(!silent) alert('✅ Sincronização concluída.\n\n' + sent + ' desenho(s) enviados ao Firebase' +
+      (skipped ? '\n' + skipped + ' ignorado(s) por serem muito grandes (ficam só local).' : '') +
+      '\n\nAgora eles devem aparecer nos outros navegadores (peça um Ctrl+Shift+R lá).');
+  }catch(e){
+    console.warn('[backfillDrawings] erro:', e);
+    if(!silent) alert('❌ Erro ao sincronizar desenhos: ' + (e.message||e));
+  }
+}
 async function fbSyncAllDrawings(){ return; }
 async function fbDownloadMissingDrawings(){ return; }
 async function fbTestConnect(){
@@ -11146,6 +11300,18 @@ function fmtBRLPlain(n) {
   return (parseFloat(n) || 0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
 
+// Atualiza o campo "Economia (Forn. − CNC)" no detalhe ao vivo.
+// Economia = Custo total Fornecedor − Custo total CNC = qt × (cu − cuCnc).
+function _updateSolDiff(rec){
+  const el = document.getElementById('dDiffInput');
+  if (!el || !rec) return;
+  const qt = parseInt(rec.qt, 10) || 0;
+  const diff = qt * (parseBRL(rec.cu) - parseBRL(rec.cuCnc));
+  el.value = (diff||0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+  el.style.color = diff >= 0 ? '#15803d' : '#b91c1c';
+  el.style.background = diff >= 0 ? '#ecfdf5' : '#fef2f2';
+}
+
 function editCu(id, val) {
   const n = parseBRL(val);
   if (isNaN(n) || n < 0) return;
@@ -11172,6 +11338,8 @@ function editCu(id, val) {
     const qt = parseInt(rec.qt, 10) || 0;
     ctotInput.value = (qt * n).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
   }
+  // Atualiza o campo de Economia (Forn. − CNC)
+  _updateSolDiff(rec);
   // Atualiza histórico no detalhe (se aberto)
   const histEl = document.getElementById('dHistory');
   if (histEl) histEl.innerHTML = renderHistory(rec);
@@ -11199,6 +11367,8 @@ function editCuCnc(id, val) {
   if (cprodInput) {
     cprodInput.value = rec.cprod.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
   }
+  // Atualiza o campo de Economia (Forn. − CNC)
+  _updateSolDiff(rec);
   // Se a aba Finanças estiver aberta, atualiza
   if (typeof fnRender === 'function' && window._fnCurrentView === 'financas') {
     fnRender();
@@ -12175,6 +12345,15 @@ function openD(id) {
             style="background:#f3f4f6;color:#374151;cursor:not-allowed"
             title="Calculado automaticamente: Quantidade × Custo unitário (CNC)"
             value="${fmtBRLPlain((parseInt(r.qt,10)||0) * parseBRL(r.cuCnc))}">
+        </span>
+      </div>
+      <div class="sol-di sol-di-edit">
+        <span>Economia (Forn. − CNC) <span style="color:#888;font-size:9px;font-weight:400;text-transform:none;letter-spacing:0;margin-left:4px">= Custo total Fornecedor − Custo total CNC</span></span>
+        <span class="sol-edit-cu">
+          R$ <input id="dDiffInput" class="sol-cu-input" type="text" readonly
+            style="font-weight:600;cursor:not-allowed;background:${((parseInt(r.qt,10)||0)*(parseBRL(r.cu)-parseBRL(r.cuCnc)))>=0?'#ecfdf5':'#fef2f2'};color:${((parseInt(r.qt,10)||0)*(parseBRL(r.cu)-parseBRL(r.cuCnc)))>=0?'#15803d':'#b91c1c'}"
+            title="Diferença: Custo total (Fornecedor) − Custo total (CNC). Verde = economia a favor do CNC; vermelho = CNC mais caro."
+            value="${fmtBRLPlain((parseInt(r.qt,10)||0) * (parseBRL(r.cu) - parseBRL(r.cuCnc)))}">
         </span>
       </div>
       <div class="sol-di"><span>Quantidade planejada</span>${esc(r.qt)||'—'}</div>
@@ -13521,6 +13700,136 @@ function confirmDelete() {
 }
 function closeN(){document.getElementById('novl').style.display='none';}
 
+// Garante que a biblioteca SheetJS (XLSX) está carregada (carrega sob demanda).
+function ensureXLSX(){
+  if(window.XLSX) return Promise.resolve(true);
+  if(window._xlsxLoading) return window._xlsxLoading;
+  window._xlsxLoading = new Promise((res)=>{
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload=()=>res(true);
+    s.onerror=()=>res(false);
+    document.head.appendChild(s);
+  });
+  return window._xlsxLoading;
+}
+
+// Dispara o download de um arquivo a partir de bytes/string (robusto entre navegadores).
+function _downloadBlob(content, filename, mime){
+  try{
+    const blob = new Blob([content], { type: mime || 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
+    return true;
+  }catch(e){ console.error('[_downloadBlob]', e); return false; }
+}
+
+// ─── Exportar Solicitações para Excel (.xlsx) ───────────────────────────────
+// Inclui TODAS as informações, inclusive os campos que ficam dentro do detalhe
+// (material, SAP IRON, serviço externo, custos, datas, pedidos, etc).
+// Respeita os filtros/busca atuais (exporta o que está sendo exibido).
+async function exportSolExcel(){
+  try{
+    const src = (typeof filtered !== 'undefined' && filtered && filtered.length) ? filtered
+              : (typeof data !== 'undefined' ? data : []);
+    if(!src.length){ alert('Não há solicitações para exportar com os filtros atuais.'); return; }
+
+    if(typeof toast === 'function') toast('Gerando Excel…', 'info', 1500);
+
+    const brDate = iso => { if(!iso) return ''; const m=String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/); return m?`${m[3]}/${m[2]}/${m[1]}`:String(iso); };
+    const num = v => { const n = (typeof parseBRL==='function') ? parseBRL(v) : parseFloat(v); return isNaN(n)?0:n; };
+
+    const rows = src.map(r => {
+      const qt = parseInt(r.qt,10)||0;
+      const qtReal = parseInt(r.qtReal,10)||0;
+      const cu = num(r.cu);
+      const cuCnc = num(r.cuCnc);
+      const totForn = qt*cu;
+      const totCnc = qt*cuCnc;
+      return {
+        'Nº Requisição': r.id || '',
+        'Forms Ref': r.formsRef || '',
+        'Status': r.status || '',
+        'Data solicitação': brDate(r.dt),
+        'Peça / Descrição': r.p || '',
+        'Planta': r.pl || '',
+        'Área': r.ar || '',
+        'OS / Centro de custo': r.os || '',
+        'Prioridade': r.pr || '',
+        'Qtd planejada': qt,
+        'Qtd realizada': qtReal,
+        'Faltam produzir': Math.max(0, qt - qtReal),
+        'Cód SAP peça': r.sp || '',
+        'Código desenho': r.cd || '',
+        'Solicitante': r.sl || '',
+        'E-mail': r.em || '',
+        'Custo unit. Fornecedor': cu,
+        'Custo total Fornecedor': totForn,
+        'Custo unit. CNC': cuCnc,
+        'Custo total CNC': totCnc,
+        'Economia (Forn - CNC)': totForn - totCnc,
+        'Material para compra': r.materialCompra || '',
+        'Materiais adicionais': Array.isArray(r.materiaisExtras) ? r.materiaisExtras.join(' | ') : '',
+        'Cód SAP IRON': r.sapIron || '',
+        'Cód matéria-prima IRON': r.mpIron || '',
+        'Serviço externo': r.propT || '',
+        'Pedido IRON': r.pedidoIron || '',
+        'Pedido compra': r.pedCompra || '',
+        'Pedido material': r.pedMat || '',
+        'Previsão fornecedor': brDate(r.prevForn),
+        'Data compra material': brDate(r.dcm),
+        'Data entrega estimada': brDate(r.dte),
+        'Data produção': brDate(r.dtp),
+        'Data entrega material': brDate(r.dem),
+        'Nota fiscal': r.nf || '',
+        'Chave NF': r.chaveNF || '',
+        'Consumo anual': r.ca || '',
+        'Peso peça (g)': r.peso || '',
+        'Tipo de tecnologia': r.tec || '',
+        'Observações': r.obs || '',
+        'Anexos': Array.isArray(r.files) ? r.files.map(f => f && f.name ? f.name : f).filter(Boolean).join(' | ') : ''
+      };
+    });
+
+    const headers = Object.keys(rows[0]);
+    const today = new Date();
+    const stamp = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+
+    // Tenta XLSX; se a biblioteca não carregar, cai pra CSV (sempre funciona).
+    const ok = await ensureXLSX();
+    if(ok && window.XLSX){
+      const ws = XLSX.utils.json_to_sheet(rows, { header: headers });
+      ws['!cols'] = headers.map(h => {
+        const wide = ['Peça / Descrição','Material para compra','Materiais adicionais','Serviço externo','Observações','Anexos','Código desenho'];
+        if (wide.includes(h)) return { wch: 40 };
+        if (h.startsWith('Custo') || h.startsWith('Economia')) return { wch: 18 };
+        if (h.startsWith('Data') || h === 'Previsão fornecedor') return { wch: 16 };
+        return { wch: Math.max(12, h.length + 2) };
+      });
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Solicitações');
+      // Download robusto via Blob (não depende do writeFile).
+      const out = XLSX.write(wb, { bookType:'xlsx', type:'array' });
+      _downloadBlob(out, `Solicitacoes_CNC_${stamp}.xlsx`,
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      if(typeof toast === 'function') toast(`✓ ${rows.length} solicitação(ões) exportada(s) (Excel)`, 'success', 3500);
+    } else {
+      // Fallback CSV (abre no Excel também). BOM p/ acentuação correta.
+      const esc = v => { const s = String(v==null?'':v); return /[",;\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+      const csv = '\uFEFF' + [headers.join(';'), ...rows.map(row => headers.map(h => esc(row[h])).join(';'))].join('\r\n');
+      _downloadBlob(csv, `Solicitacoes_CNC_${stamp}.csv`, 'text/csv;charset=utf-8');
+      if(typeof toast === 'function') toast(`✓ ${rows.length} exportada(s) em CSV (Excel não carregou)`, 'success', 4000);
+    }
+  }catch(e){
+    console.error('[exportSolExcel]', e);
+    alert('❌ Erro ao exportar: ' + (e.message || e));
+  }
+}
+
 function openNew() {
   newFiles=[];
   _newFileBlobs=[];
@@ -14037,6 +14346,15 @@ function createRelated(srcId) {
   // Abre o detalhe da nova
   setTimeout(() => openD(newId), 100);
 }
+
+// ── Expor ao window funções chamadas por handlers inline (onclick/oninput/onchange)
+//    que estão DENTRO deste módulo Sol (IIFE). Sem isto, o navegador não as acha. ──
+window.exportSolExcel = exportSolExcel;
+window.ensureXLSX = ensureXLSX;
+window._downloadBlob = _downloadBlob;
+window.brDateMask = brDateMask;
+window.brDateCommit = brDateCommit;
+window.brDateFromNative = brDateFromNative;
 
 return {
   init,
@@ -15349,6 +15667,14 @@ async function fbBootstrap() {
   });
 
   console.log('[FB] Bootstrap completo. Listeners ativos.');
+
+  // Backfill automático (uma vez por navegador): envia ao Firebase os desenhos
+  // que só existem no IndexedDB local, p/ aparecerem nos outros navegadores.
+  try{
+    if(!localStorage.getItem('cnc_drawings_backfilled_v1')){
+      setTimeout(() => { try { backfillDrawingsToFirebase(true); } catch(e){} }, 4000);
+    }
+  }catch(e){}
   } catch (e) {
     FB.reportError('bootstrap', e);
   }
