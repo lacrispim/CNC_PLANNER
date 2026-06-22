@@ -3115,7 +3115,8 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
 <div class="sol-main">
   <div class="sol-stats" id="stats"></div>
   <div class="sol-filters">
-    <input id="fsearch" type="search" data-i18n-placeholder="sol.buscarPlaceholder" placeholder="Buscar por peça, código SAP, desenho, solicitante, Forms Ref..." oninput="Sol.go()" onsearch="Sol.go()">
+    <input id="fsearch" type="search" data-i18n-placeholder="sol.buscarPlaceholder" placeholder="Buscar por peça, desenho, solicitante, Forms Ref..." oninput="Sol.go()" onsearch="Sol.go()">
+    <input id="fsap" type="search" placeholder="🔍 SAP" oninput="Sol.go()" onsearch="Sol.go()" style="min-width:120px;max-width:160px" title="Buscar por código SAP da peça">
     <select id="fpl" onchange="Sol.go()"><option value="" data-i18n="sol.todasPlantas">Todas as plantas</option></select>
     <select id="far" onchange="Sol.go()"><option value="" data-i18n="sol.todasAreas">Todas as áreas</option></select>
     <select id="fpr" onchange="Sol.go()"><option value="" data-i18n="sol.todasPrior">Todas as prioridades</option></select>
@@ -3313,7 +3314,7 @@ const I18N = {
     'sol.atrelarDes': 'Atrelar desenhos',
     'sol.materiaisCompraTitle': 'Lista de materiais a comprar — solicitações com status Aprovação para compra',
     'sol.atrelarTitle': 'Anexar desenhos em lote por nome de arquivo',
-    'sol.buscarPlaceholder': 'Buscar por peça, código SAP, código desenho, solicitante...',
+    'sol.buscarPlaceholder': 'Buscar por peça, desenho, solicitante, Forms Ref...',
     'sol.buscar': 'Buscar...',
     'sol.todasPlantas': 'Todas as plantas',
     'sol.todasAreas': 'Todas as áreas',
@@ -3618,7 +3619,7 @@ const I18N = {
     'sol.atrelarDes': 'Link drawings',
     'sol.materiaisCompraTitle': 'List of materials to purchase — requests with status Approved for purchase',
     'sol.atrelarTitle': 'Bulk-attach drawings by file name',
-    'sol.buscarPlaceholder': 'Search by part, SAP code, drawing code, requester...',
+    'sol.buscarPlaceholder': 'Search by part, drawing code, requester, Forms Ref...',
     'sol.buscar': 'Search...',
     'sol.todasPlantas': 'All plants',
     'sol.todasAreas': 'All areas',
@@ -11572,11 +11573,14 @@ const _mods = _loadMods();
 const _newRecs = _loadNewRecs();
 let data = (function(){
   const deletedSet = new Set(_loadDeletedIds().map(String));
+  // IDs presentes em _newRecs (sol_new) têm prioridade sobre RAW_DATA
+  // (permitem o usuário "substituir" uma solicitação do código com versão própria)
+  const newRecIds = new Set(_newRecs.map(r => String(r.id)));
   const initial = [
     // Novos registros criados pelo usuário (unshift = aparecem primeiro)
     ..._newRecs.map(r => _hydrate(r, _mods, true)),
-    // Base RAW_DATA com mods aplicados por cima
-    ...RAW_DATA.map(r => _hydrate(r, _mods, false))
+    // Base RAW_DATA com mods aplicados por cima (exclui os IDs já presentes em sol_new)
+    ...RAW_DATA.filter(r => !newRecIds.has(String(r.id))).map(r => _hydrate(r, _mods, false))
   ];
   // Filtra IDs marcados como deletados (persistente via Firebase)
   return initial.filter(r => !deletedSet.has(String(r.id)));
@@ -11609,9 +11613,10 @@ function reloadFromStorage() {
   const fresh_mods = _loadMods();
   const fresh_newRecs = _loadNewRecs();
   const deletedSet = new Set(_loadDeletedIds().map(String));
+  const newRecIds = new Set(fresh_newRecs.map(r => String(r.id)));
   const newData = [
     ...fresh_newRecs.map(r => _hydrate(r, fresh_mods, true)),
-    ...RAW_DATA.map(r => _hydrate(r, fresh_mods, false))
+    ...RAW_DATA.filter(r => !newRecIds.has(String(r.id))).map(r => _hydrate(r, fresh_mods, false))
   ].filter(r => !deletedSet.has(String(r.id)));
   // Substitui o conteúdo do array `data` mantendo a referência
   data.length = 0;
@@ -11703,6 +11708,7 @@ function renderStats() {
 
 function go() {
   const q = document.getElementById('fsearch').value.toLowerCase().trim();
+  const qSap = (document.getElementById('fsap')||{}).value ? document.getElementById('fsap').value.trim() : '';
   const pl = document.getElementById('fpl').value;
   const ar = document.getElementById('far').value;
   const pr = document.getElementById('fpr').value;
@@ -11759,11 +11765,24 @@ function go() {
       if (dy && D !== dy) return false;
     }
     if (q) {
-      const hay = [r.p,r.cd,r.sp,r.sl,r.id,r.os,r.formsRef].join(' ').toLowerCase();
+      // Se o termo é puramente NUMÉRICO (ex: "457"), busca SÓ no id e formsRef
+      // (evita match acidental em SAP, Cód desenho, OS — onde números também aparecem)
+      const isPureNumber = /^\d+$/.test(q);
+      let hay;
+      if (isPureNumber) {
+        hay = [r.id, r.formsRef].join(' ').toLowerCase();
+      } else {
+        hay = [r.p, r.cd, r.sl, r.id, r.os, r.formsRef].join(' ').toLowerCase();
+      }
       if (!hay.includes(q)) return false;
       r._matchScore = _matchScore(r, q);
     } else {
       r._matchScore = 0;
+    }
+    // Filtro DEDICADO por SAP da peça
+    if (qSap) {
+      const sapStr = String(r.sp || '').toLowerCase();
+      if (!sapStr.includes(qSap.toLowerCase())) return false;
     }
     return true;
   });
@@ -13307,6 +13326,13 @@ function saveN() {
     }
   } else {
     recId = _nextManualId();
+  }
+  // Se o ID estava marcado como DELETADO (do RAW_DATA), desmarca pra permitir recriação
+  // sem o filtro escondê-lo no próximo refresh.
+  const _deletedIds = _loadDeletedIds();
+  if (_deletedIds.includes(String(recId))) {
+    _unmarkDeleted(recId);
+    console.log('[saveN] ID', recId, 'estava em sol_deleted — desmarcado pra permitir recriação');
   }
   const rec={
     id: recId,
