@@ -10817,12 +10817,22 @@ function _markDeleted(id){
   if (!ids.includes(String(id))) {
     ids.push(String(id));
     _saveDeletedIds(ids);
+    // Garantia EXTRA: envia direto pro Firebase (não confia só no interceptor)
+    if (typeof FB !== 'undefined' && FB.save) {
+      try { FB.save('/sol_deleted', ids); console.log('[deleteSol] /sol_deleted salvo direto no Firebase:', ids.length, 'IDs'); }
+      catch(e) { console.warn('[deleteSol] FB.save direto falhou:', e); }
+    }
   }
 }
 function _unmarkDeleted(id){
   const ids = _loadDeletedIds();
   const filtered = ids.filter(x => String(x) !== String(id));
-  if (filtered.length !== ids.length) _saveDeletedIds(filtered);
+  if (filtered.length !== ids.length) {
+    _saveDeletedIds(filtered);
+    if (typeof FB !== 'undefined' && FB.save) {
+      try { FB.save('/sol_deleted', filtered); } catch(e) {}
+    }
+  }
 }
 
 // Sync Firebase: salva debounced (2s). Usa fbGetBaseUrl() + fbReady do CNC.
@@ -14914,11 +14924,12 @@ async function fbBootstrap() {
     console.log('[FB] Dados do servidor:', serverData ? Object.keys(serverData) : 'vazio');
 
   const mergeStrategy = {
-    '/backlog':    'cnc_os_data_v1',
-    '/sol_mods':   'cnc_sol_mods_v1',
-    '/sol_new':    'cnc_sol_new_v1',
-    '/budgets':    'cnc_fn_budgets_v1',
-    '/config':     'cnc_os_config_v1'
+    '/backlog':      'cnc_os_data_v1',
+    '/sol_mods':     'cnc_sol_mods_v1',
+    '/sol_new':      'cnc_sol_new_v1',
+    '/sol_deleted':  'cnc_sol_deleted_v1',
+    '/budgets':      'cnc_fn_budgets_v1',
+    '/config':       'cnc_os_config_v1'
   };
 
   for (const fbPath in mergeStrategy) {
@@ -15048,9 +15059,9 @@ async function fbBootstrap() {
         }
       }
 
-      // FIX: pra /sol_new e /sol_mods, reconstrói o `data` do Sol em memória
+      // FIX: pra /sol_new, /sol_mods e /sol_deleted, reconstrói o `data` do Sol em memória
       // (antes apenas atualizava localStorage mas data ficava obsoleto)
-      if ((fbPath === '/sol_new' || fbPath === '/sol_mods') && window.Sol && Sol.reloadFromStorage) {
+      if ((fbPath === '/sol_new' || fbPath === '/sol_mods' || fbPath === '/sol_deleted') && window.Sol && Sol.reloadFromStorage) {
         try { Sol.reloadFromStorage(); } catch(e) { console.warn('[FB] reload erro:', e); }
       }
 
