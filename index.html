@@ -9166,31 +9166,52 @@ const FB = (function() {
   /* ─── Salvamento GRANULAR (uma chave por vez) ───
      Em vez de mandar /sol_mods inteiro (que pode ter MBs), manda só /sol_mods/M00002.
      Isso evita timeouts, race conditions e quase sempre completa em <500ms.
-     - Mostra toast vermelho se falhar (Lari vai saber na hora)
-     - Suporta debounce por (path+key) pra não saturar em digitação rápida */
+     - delay reduzido para 200ms (era 600ms — causava perda em refreshes rápidos)
+     - NÃO bloqueia em !connected (deixa o Firebase SDK lidar com a conexão)
+     - Flush automático antes do unload da página */
   const _saveKeyDebounced = {};
-  function saveKey(path, key, value, delay = 600) {
+  const _pendingSaveKeys = {};  // path|key → {value, deferred} pra flush no unload
+  function saveKey(path, key, value, delay = 30) {
+    // Adiciona timestamp pra listener saber qual é a versão mais recente
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      value._ts = Date.now();
+    }
     const k = path + '|' + key;
+    _pendingSaveKeys[k] = { path, key, value };
     if (_saveKeyDebounced[k]) clearTimeout(_saveKeyDebounced[k]);
-    _saveKeyDebounced[k] = setTimeout(() => {
-      if (!db || !connected) {
-        console.warn('[FB] saveKey offline — não enviado:', path, key);
-        if (typeof toast === 'function') toast('⚠ Offline — alteração só local, não foi pro Firebase', 'warning', 4000);
-        return;
-      }
-      _stats.writes++;
-      const fullPath = path + '/' + key;
-      db.ref(fullPath).set(value).then(() => {
-        markSync();
-        console.log('[FB] saveKey OK:', fullPath);
-      }).catch(e => {
-        _stats.failedWrites++;
-        reportError('saveKey ' + fullPath, e);
-        console.error('[FB] ❌ saveKey FALHOU:', fullPath, e.code, e.message);
-        if (typeof toast === 'function') toast('❌ Erro ao salvar no Firebase: ' + (e.code || e.message), 'error', 6000);
-      });
-    }, delay);
+    _saveKeyDebounced[k] = setTimeout(() => _doSaveKey(k), delay);
   }
+  function _doSaveKey(k) {
+    const pending = _pendingSaveKeys[k];
+    if (!pending) return;
+    delete _pendingSaveKeys[k];
+    delete _saveKeyDebounced[k];
+    if (!db) {
+      console.warn('[FB] saveKey: db não inicializado', k);
+      return;
+    }
+    _stats.writes++;
+    const fullPath = pending.path + '/' + pending.key;
+    db.ref(fullPath).set(pending.value).then(() => {
+      markSync();
+      console.log('[FB] saveKey OK:', fullPath);
+    }).catch(e => {
+      _stats.failedWrites++;
+      reportError('saveKey ' + fullPath, e);
+      console.error('[FB] ❌ saveKey FALHOU:', fullPath, e.code, e.message);
+      if (typeof toast === 'function') toast('❌ Erro ao salvar: ' + (e.code || e.message), 'error', 6000);
+    });
+  }
+  // Flush pendentes antes da página fechar/recarregar
+  window.addEventListener('beforeunload', () => {
+    const keys = Object.keys(_saveKeyDebounced);
+    if (keys.length === 0) return;
+    console.log('[FB] beforeunload: forçando flush de', keys.length, 'escritas pendentes');
+    keys.forEach(k => {
+      clearTimeout(_saveKeyDebounced[k]);
+      _doSaveKey(k);
+    });
+  });
 
   /* ─── Listener em tempo real ───
      Quando alguém atualiza /backlog em outro dispositivo, callback é chamado
@@ -9235,6 +9256,7 @@ const FB_KEY_MAP = {
   'cnc_os_data_v1':       '/backlog',
   'cnc_sol_mods_v1':      '/sol_mods',
   'cnc_sol_new_v1':       '/sol_new',
+  'cnc_sol_deleted_v1':   '/sol_deleted',
   'cnc_fn_budgets_v1':    '/budgets',
   'cnc_os_config_v1':     '/config'
 };
@@ -9711,9 +9733,19 @@ window.cleanFirebaseNow = async function() {
 Confirma execução?`;
   if (!confirm(PLANO)) return;
 
-  if (!FB || !FB.db || !FB.connected) {
-    alert('❌ Firebase não conectado. Recarregue e tente novamente.');
+  // Espera Firebase conectar (até 15s)
+  if (!FB || !FB.db) {
+    alert('❌ Firebase não inicializado. Aguarde uns segundos e tente de novo.');
     return;
+  }
+  let tries = 0;
+  while (!FB.connected && tries < 30) {
+    await new Promise(r => setTimeout(r, 500));
+    tries++;
+  }
+  if (!FB.connected) {
+    // Mesmo assim, vamos TENTAR — pode estar com flag desatualizada
+    console.warn('[CLEAN] FB.connected=false após 15s, tentando mesmo assim...');
   }
   const db = FB.db;
   const updates = {};
@@ -10775,6 +10807,24 @@ function _saveMods(m){ try{ localStorage.setItem(SOL_MODS_KEY, JSON.stringify(m)
 function _loadNewRecs(){ try{ return JSON.parse(localStorage.getItem(SOL_NEW_KEY))||[]; } catch{ return []; } }
 function _saveNewRecs(arr){ try{ localStorage.setItem(SOL_NEW_KEY, JSON.stringify(arr)); } catch(e){} }
 
+// IDs deletados: lista persistente (Firebase + localStorage) pra que solicitações
+// excluídas (mesmo as do RAW_DATA) não voltem ao recarregar.
+const SOL_DELETED_KEY = 'cnc_sol_deleted_v1';
+function _loadDeletedIds(){ try{ return JSON.parse(localStorage.getItem(SOL_DELETED_KEY))||[]; } catch{ return []; } }
+function _saveDeletedIds(ids){ try{ localStorage.setItem(SOL_DELETED_KEY, JSON.stringify(ids)); } catch(e){} }
+function _markDeleted(id){
+  const ids = _loadDeletedIds();
+  if (!ids.includes(String(id))) {
+    ids.push(String(id));
+    _saveDeletedIds(ids);
+  }
+}
+function _unmarkDeleted(id){
+  const ids = _loadDeletedIds();
+  const filtered = ids.filter(x => String(x) !== String(id));
+  if (filtered.length !== ids.length) _saveDeletedIds(filtered);
+}
+
 // Sync Firebase: salva debounced (2s). Usa fbGetBaseUrl() + fbReady do CNC.
 let _solFbSaveTimer = null;
 function _persistRec(r){
@@ -11510,12 +11560,17 @@ function _hydrate(r, mods, isNew) {
 // Merge base (RAW_DATA) + modificações persistidas + novos registros criados via saveN
 const _mods = _loadMods();
 const _newRecs = _loadNewRecs();
-let data = [
-  // Novos registros criados pelo usuário (unshift = aparecem primeiro)
-  ..._newRecs.map(r => _hydrate(r, _mods, true)),
-  // Base RAW_DATA com mods aplicados por cima
-  ...RAW_DATA.map(r => _hydrate(r, _mods, false))
-];
+let data = (function(){
+  const deletedSet = new Set(_loadDeletedIds().map(String));
+  const initial = [
+    // Novos registros criados pelo usuário (unshift = aparecem primeiro)
+    ..._newRecs.map(r => _hydrate(r, _mods, true)),
+    // Base RAW_DATA com mods aplicados por cima
+    ...RAW_DATA.map(r => _hydrate(r, _mods, false))
+  ];
+  // Filtra IDs marcados como deletados (persistente via Firebase)
+  return initial.filter(r => !deletedSet.has(String(r.id)));
+})();
 
 // No init, depois que o Firebase tá pronto, tenta carregar mods remotos
 (function _solFbInitLoad(){
@@ -11543,10 +11598,11 @@ function reloadFromStorage() {
   console.log('[Sol] reloadFromStorage iniciado');
   const fresh_mods = _loadMods();
   const fresh_newRecs = _loadNewRecs();
+  const deletedSet = new Set(_loadDeletedIds().map(String));
   const newData = [
     ...fresh_newRecs.map(r => _hydrate(r, fresh_mods, true)),
     ...RAW_DATA.map(r => _hydrate(r, fresh_mods, false))
-  ];
+  ].filter(r => !deletedSet.has(String(r.id)));
   // Substitui o conteúdo do array `data` mantendo a referência
   data.length = 0;
   newData.forEach(item => data.push(item));
@@ -13153,6 +13209,11 @@ function confirmDelete() {
     // 1) Remove da memória (array `data`)
     const idx = data.findIndex(d => String(d.id) === String(id));
     if (idx >= 0) data.splice(idx, 1);
+
+    // 2) Marca como DELETADO (persiste no Firebase via interceptor)
+    // Sem isso, IDs do RAW_DATA (hardcoded no código) voltariam ao recarregar.
+    _markDeleted(id);
+    console.log('[deleteSol] Marcado como deletado em /sol_deleted (Firebase sync)');
 
     // 2) Remove do SOL_NEW_KEY (solicitação manual) — propaga ao Firebase via interceptor
     try {
@@ -14947,7 +15008,30 @@ async function fbBootstrap() {
     FB.listen(fbPath, (val) => {
       // val pode ser null (todos os registros foram excluídos) ou um objeto/array
       const origSet = Object.getPrototypeOf(localStorage).setItem;
-      if (val === null || val === undefined) {
+      
+      // MERGE INTELIGENTE para /sol_mods: preserva edições locais mais recentes
+      // (evita que listener sobrescreva uma edição que ainda não foi sincronizada)
+      if (fbPath === '/sol_mods' && val && typeof val === 'object' && !Array.isArray(val)) {
+        const localRaw = localStorage.getItem(lsKey);
+        let localObj = {};
+        try { localObj = JSON.parse(localRaw || '{}'); } catch {}
+        const merged = {};
+        const allKeys = new Set([...Object.keys(localObj), ...Object.keys(val)]);
+        let kept = 0, applied = 0;
+        for (const k of allKeys) {
+          const loc = localObj[k];
+          const ser = val[k];
+          if (!loc) { merged[k] = ser; applied++; continue; }
+          if (!ser) { merged[k] = loc; kept++; continue; }
+          // Compara timestamps: aplica o mais recente
+          const locTs = loc._ts || 0;
+          const serTs = ser._ts || 0;
+          if (locTs > serTs) { merged[k] = loc; kept++; }
+          else { merged[k] = ser; applied++; }
+        }
+        origSet.call(localStorage, lsKey, JSON.stringify(merged));
+        console.log(`[FB] Listener /sol_mods MERGE: ${applied} aplicados, ${kept} locais preservados (mais recentes)`);
+      } else if (val === null || val === undefined) {
         // Servidor está vazio — limpa local também
         origSet.call(localStorage, lsKey, JSON.stringify(fbPath === '/sol_mods' || fbPath === '/config' ? {} : []));
       } else {
