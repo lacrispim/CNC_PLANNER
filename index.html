@@ -2803,6 +2803,22 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
       <div class="dash-card-body" id="dashChartVolume"></div>
     </div>
   </div>
+
+  <!-- Linha 4: Top peças por economia (full width) -->
+  <div class="dash-grid dash-grid-1">
+    <div class="dash-card">
+      <div class="dash-card-header"><span data-i18n="dash.chart.topPecasHeader">Top 10 peças por economia</span> <span style="font-weight:400;font-size:10.5px;opacity:.75" data-i18n="dash.chart.apenasEncerrados">(apenas Encerrados)</span></div>
+      <div class="dash-card-body" id="dashChartTopPecas"></div>
+    </div>
+  </div>
+
+  <!-- Linha 5: Economia acumulada ao longo do tempo (full width) -->
+  <div class="dash-grid dash-grid-1">
+    <div class="dash-card">
+      <div class="dash-card-header"><span data-i18n="dash.chart.ecoTempoHeader">Economia acumulada ao longo do tempo</span> <span style="font-weight:400;font-size:10.5px;opacity:.75" data-i18n="dash.chart.apenasEncerrados">(apenas Encerrados)</span></div>
+      <div class="dash-card-body" id="dashChartEcoTempo"></div>
+    </div>
+  </div>
 </div>
 
 <div class="dw-container" id="desenhosView" style="display:none">
@@ -3375,6 +3391,8 @@ const I18N = {
     'dash.chart.difLegenda': 'Diferença (Fornec - CNC)',
     'dash.chart.statusHeader': 'Distribuição de Status',
     'dash.chart.sitesHeader': 'Diferença de custo por fábrica',
+    'dash.chart.topPecasHeader': 'Top 10 peças por economia',
+    'dash.chart.ecoTempoHeader': 'Economia acumulada ao longo do tempo',
     'dash.chart.pilarHeader': 'Solicitações por Pilar',
     'dash.chart.volumeHeader': 'Volume de Solicitações por Site',
     'dash.chart.semEncerradas': 'Sem solicitações Encerradas no período',
@@ -3677,6 +3695,8 @@ const I18N = {
     'dash.chart.difLegenda': 'Difference (Supplier - CNC)',
     'dash.chart.statusHeader': 'Status Distribution',
     'dash.chart.sitesHeader': 'Cost difference by plant',
+    'dash.chart.topPecasHeader': 'Top 10 parts by savings',
+    'dash.chart.ecoTempoHeader': 'Cumulative savings over time',
     'dash.chart.pilarHeader': 'Requests by Pillar',
     'dash.chart.volumeHeader': 'Request Volume by Site',
     'dash.chart.semEncerradas': 'No Closed requests in the period',
@@ -16162,6 +16182,8 @@ function dashRender(){
   _dashRenderSites(data);
   _dashRenderPilar(data);
   _dashRenderVolume(data);
+  _dashRenderTopPecas(data);
+  _dashRenderEconomiaTempo(data);
 }
 window.dashRender = dashRender;
 
@@ -16526,6 +16548,178 @@ function _dashRenderVolume(data){
   });
   svg += `</svg>`;
   el.innerHTML = svg;
+}
+
+/* ─── Top 10 peças por economia (barras horizontais) ───
+   Ranking dos formulários Encerrados que mais economizaram (Fornecedor − CNC). */
+function _dashRenderTopPecas(data){
+  const el = document.getElementById('dashChartTopPecas');
+  if(!el) return;
+  const closed = _dashSavingData(data)
+    .map(d => ({
+      id: d.id, formsRef: d.formsRef, p: d.p,
+      saving: (d.totFornec || 0) - (d.totCNC || 0),
+      forn: d.totFornec || 0, cnc: d.totCNC || 0
+    }))
+    .filter(d => d.saving > 0)
+    .sort((a,b) => b.saving - a.saving)
+    .slice(0, 10);
+
+  if(closed.length === 0){
+    el.innerHTML = `<div class="dash-card-empty">${t('dash.chart.semEncerradas')}</div>`;
+    return;
+  }
+
+  const max = Math.max(...closed.map(d => d.saving)) || 1;
+  const W = 900, padL = 14, padR = 90, padT = 8, padB = 8;
+  const rowH = 44, barH = 16;
+  const H = padT + padB + closed.length * rowH;
+  const chartW = W - padL - padR;
+  const color = DASH_COLORS.done;  // verde = economia
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
+  closed.forEach((d,i) => {
+    const yTop = padT + i * rowH;
+    const yText = yTop + 13;
+    const yBar = yTop + 20;
+    const w = Math.max(2, (d.saving / max) * chartW);
+    const ref = d.formsRef ? `Forms ${_dashEscape(d.formsRef)}` : _dashEscape(d.id);
+    let nome = d.p || '(sem descrição)';
+    if(nome.length > 58) nome = nome.slice(0,58) + '…';
+    // Rótulo: ranking + peça + Forms Ref
+    svg += `<text x="${padL}" y="${yText}" font-size="11.5" fill="#1a1a1a" font-weight="600">`
+         + `${i+1}. ${_dashEscape(nome)} `
+         + `<tspan fill="#999" font-weight="400" font-family="'JetBrains Mono',monospace">· ${ref}</tspan></text>`;
+    // Trilho + barra
+    svg += `<rect x="${padL}" y="${yBar}" width="${chartW}" height="${barH}" fill="#f5f5ef" rx="3"/>`;
+    svg += `<rect x="${padL}" y="${yBar}" width="${w}" height="${barH}" fill="${color}" rx="3"/>`;
+    // Valor da economia ao final da barra
+    svg += `<text x="${padL + w + 6}" y="${yBar + barH/2 + 4}" font-size="11" font-weight="700" fill="#15803d" font-family="'JetBrains Mono',monospace">`
+         + `${_dashFmtBRL(d.saving)}</text>`;
+  });
+  svg += `</svg>`;
+  el.innerHTML = svg;
+}
+
+/* ─── Economia acumulada ao longo do tempo (barras mensais + linha acumulada) ───
+   Conta a história do retorno do CNC: economia (Fornecedor − CNC) por mês e o
+   acumulado. Usa data de produção (dtp) dos Encerrados; cai pra data de solicitação. */
+function _dashRenderEconomiaTempo(data){
+  const el = document.getElementById('dashChartEcoTempo');
+  if(!el) return;
+  const closed = _dashSavingData(data);
+  const byMonth = {};
+  closed.forEach(d => {
+    const iso = d.dtp || d.dt || '';
+    const m = String(iso).slice(0,7);          // YYYY-MM
+    if(!/^\d{4}-\d{2}$/.test(m)) return;
+    if(!byMonth[m]) byMonth[m] = {saving:0, forn:0, cnc:0, n:0};
+    byMonth[m].saving += (d.totFornec||0) - (d.totCNC||0);
+    byMonth[m].forn   += (d.totFornec||0);
+    byMonth[m].cnc    += (d.totCNC||0);
+    byMonth[m].n++;
+  });
+  const months = Object.keys(byMonth).sort();
+  if(months.length === 0){
+    el.innerHTML = `<div class="dash-card-empty">${t('dash.chart.semEncerradas')}</div>`;
+    return;
+  }
+  let cum = 0;
+  const series = months.map(m => { cum += byMonth[m].saving; return {m, ...byMonth[m], cum}; });
+  window._dashEcoData = series;  // p/ tooltip
+
+  const total = cum;
+  const monthlyMax = Math.max(...series.map(s => Math.abs(s.saving)), 1);
+  const cumMax     = Math.max(...series.map(s => s.cum), 1);
+
+  const lbl = m => { const [y,mm] = m.split('-'); return _DASH_MONTH_NAMES[+mm-1] + '/' + y.slice(2); };
+
+  const W = 980, H = 360, padL = 60, padR = 70, padT = 46, padB = 50;
+  const chartW = W - padL - padR, chartH = H - padT - padB;
+  const slotW = chartW / series.length;
+  const barW = Math.min(46, slotW * 0.5);
+  const baseY = padT + chartH;
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
+
+  // Grid + eixos (esquerdo = mensal, direito = acumulado)
+  for(let i=0;i<=4;i++){
+    const y = baseY - (i/4)*chartH;
+    svg += `<line x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" stroke="#f0f0eb" stroke-width="1"/>`;
+    svg += `<text x="${padL-6}" y="${y+3}" text-anchor="end" font-size="9" fill="${DASH_COLORS.forn}">${_dashFmtBRL((i/4)*monthlyMax)}</text>`;
+    svg += `<text x="${W-padR+6}" y="${y+3}" text-anchor="start" font-size="9" fill="${DASH_COLORS.saving}">${_dashFmtBRL((i/4)*cumMax)}</text>`;
+  }
+
+  // Barras da economia mensal
+  series.forEach((s,i) => {
+    const cx = padL + i*slotW + slotW/2;
+    const h = (Math.max(0,s.saving)/monthlyMax)*chartH;
+    const y = baseY - h;
+    svg += `<rect x="${cx-barW/2}" y="${y}" width="${barW}" height="${h}" fill="${DASH_COLORS.forn}" rx="2" opacity="0.85"/>`;
+    // valor do mês acima da barra
+    if(h >= 8) svg += `<text x="${cx}" y="${y-4}" text-anchor="middle" font-size="9" fill="#444">${_dashFmtBRL(s.saving)}</text>`;
+    // rótulo do mês
+    svg += `<text x="${cx}" y="${baseY+16}" text-anchor="middle" font-size="10" fill="#666" font-family="'JetBrains Mono',monospace">${lbl(s.m)}</text>`;
+    svg += `<text x="${cx}" y="${baseY+29}" text-anchor="middle" font-size="8.5" fill="#aaa">${s.n} form.</text>`;
+  });
+
+  // Área + linha do acumulado
+  const pts = series.map((s,i) => [padL + i*slotW + slotW/2, baseY - (s.cum/cumMax)*chartH]);
+  if(pts.length){
+    const areaD = `M ${pts[0][0]} ${baseY} ` + pts.map(p=>`L ${p[0]} ${p[1]}`).join(' ') + ` L ${pts[pts.length-1][0]} ${baseY} Z`;
+    svg += `<path d="${areaD}" fill="${DASH_COLORS.saving}" opacity="0.10"/>`;
+    const lineD = 'M ' + pts.map(p=>`${p[0]} ${p[1]}`).join(' L ');
+    svg += `<path d="${lineD}" fill="none" stroke="${DASH_COLORS.saving}" stroke-width="2.5"/>`;
+    pts.forEach(p => { svg += `<circle cx="${p[0]}" cy="${p[1]}" r="3.5" fill="#fff" stroke="${DASH_COLORS.saving}" stroke-width="2"/>`; });
+  }
+
+  // Pílula com o TOTAL acumulado (topo direito)
+  const totTxt = 'Acumulado: ' + _dashFmtBRLFull(total);
+  const pillW = Math.max(150, totTxt.length*6.6 + 20);
+  svg += `<g transform="translate(${W-padR-pillW}, 8)">
+    <rect width="${pillW}" height="24" rx="12" fill="${DASH_COLORS.saving}"/>
+    <text x="${pillW/2}" y="16" text-anchor="middle" font-size="12" font-weight="700" fill="#fff" font-family="'JetBrains Mono',monospace">${_dashEscape(totTxt)}</text>
+  </g>`;
+
+  // Legenda
+  svg += `<g transform="translate(${padL}, 14)">
+    <rect width="11" height="11" rx="2" fill="${DASH_COLORS.forn}" opacity="0.85"/>
+    <text x="16" y="10" font-size="10.5" fill="#444" font-family="'JetBrains Mono',monospace">Economia do mês</text>
+    <line x1="150" y1="6" x2="172" y2="6" stroke="${DASH_COLORS.saving}" stroke-width="2.5"/>
+    <text x="178" y="10" font-size="10.5" fill="#444" font-family="'JetBrains Mono',monospace">Acumulado</text>
+  </g>`;
+
+  // Áreas de hover (tooltip por mês)
+  series.forEach((s,i) => {
+    const gx = padL + i*slotW;
+    svg += `<rect x="${gx}" y="0" width="${slotW}" height="${baseY}" fill="transparent" style="cursor:pointer" `
+         + `onmouseenter="_dashEcoTipShow(event, ${i})" onmousemove="_dashSiteTipMove(event)" onmouseleave="_dashSiteTipHide()"></rect>`;
+  });
+
+  svg += `</svg>`;
+  el.innerHTML = svg;
+}
+
+// Tooltip do gráfico de economia acumulada (reaproveita a caixinha do tooltip de site)
+function _dashEcoTipShow(evt, idx){
+  const s = (window._dashEcoData || [])[idx];
+  if(!s) return;
+  const el = _dashSiteTipEl();
+  const esc = x => String(x==null?'':x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const [y,mm] = s.m.split('-');
+  const nomeMes = _DASH_MONTH_NAMES[+mm-1] + '/' + y;
+  const savCol = s.saving >= 0 ? '#34d399' : '#f87171';
+  el.innerHTML =
+    `<div style="font-weight:700;margin-bottom:5px;font-size:12.5px">${esc(nomeMes)} `
+      + `<span style="opacity:.6;font-weight:400">· ${s.n} formulário${s.n>1?'s':''}</span></div>`
+    + `<div style="display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(255,255,255,.16);padding-bottom:4px;margin-bottom:4px">`
+      + `<span>Fornecedor: <b>${_dashTipBRL(s.forn)}</b></span><span>CNC: <b>${_dashTipBRL(s.cnc)}</b></span></div>`
+    + `<div style="display:flex;justify-content:space-between;gap:14px"><span>Economia do mês</span>`
+      + `<span style="color:${savCol};font-weight:700">${_dashTipBRL(s.saving)}</span></div>`
+    + `<div style="display:flex;justify-content:space-between;gap:14px;border-top:1px solid rgba(255,255,255,.16);margin-top:4px;padding-top:4px">`
+      + `<span>Acumulado até aqui</span><span style="color:#34d399;font-weight:700">${_dashTipBRL(s.cum)}</span></div>`;
+  el.style.display = 'block';
+  _dashSiteTipMove(evt);
 }
 
 window.fbReconnect = fbReconnect;
