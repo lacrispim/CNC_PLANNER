@@ -8604,6 +8604,78 @@ function dwLoad(){
 function dwSave(){
   try{localStorage.setItem(DW_KEY,JSON.stringify(dwLib));}catch(e){console.warn('localStorage cheio:',e.message);}
   autoSave();
+  dwSyncToFirebase();
+}
+
+// ─── Sincronização da Biblioteca de Desenhos (dwLib) via Firebase /dwlib ─────
+// A LISTA não sincronizava (só ficava no localStorage de cada navegador). Agora
+// os metadados vão pro Firebase (granular, SEM o base64 pesado — os bytes já vão
+// p/ /drawings/dw_<req>). Os bytes da miniatura são buscados sob demanda.
+const DWLIB_FB_PATH = '/dwlib';
+function _dwKey(req){ return String(req).replace(/[.#$\[\]\/]/g, '_'); }
+
+function dwSyncToFirebase(){
+  try{
+    if(typeof FB === 'undefined' || !FB.saveKey) return;
+    dwLib.forEach((d, i) => {
+      if(!d || !d.req) return;
+      const meta = Object.assign({}, d);
+      delete meta.drawingB64;  // bytes ficam em /drawings/dw_<req>
+      FB.saveKey(DWLIB_FB_PATH, _dwKey(d.req), meta, 250 + i * 15);
+    });
+  }catch(e){ console.warn('[dwSyncToFirebase]', e); }
+}
+
+// Busca os bytes do desenho de uma entrada da biblioteca (IndexedDB → Firebase)
+// e renderiza a miniatura. Usado quando a entrada veio sincronizada sem o base64.
+async function dwEnsureDrawing(idx){
+  const d = dwLib[idx];
+  if(!d || d.drawingB64 || !d.req) return;
+  try{
+    let rec = await idbLoadDrawing('dw_' + d.req);
+    if(!rec || !rec.b64) rec = await fbLoadDrawing('dw_' + d.req);
+    if(rec && rec.b64){
+      d.drawingB64 = rec.b64;
+      d.drawingType = d.drawingType || rec.type || 'application/pdf';
+      d.drawingName = d.drawingName || rec.name || null;
+      try{ idbSaveDrawing('dw_' + d.req, rec.b64, d.drawingName, d.drawingType); }catch(e){}
+      const i2 = dwLib.indexOf(d);
+      if(typeof dwRenderThumb === 'function') dwRenderThumb(i2, d.drawingB64, d.drawingType);
+    }
+  }catch(e){ console.warn('[dwEnsureDrawing]', e && e.message || e); }
+}
+
+// Escuta /dwlib e mescla no dwLib local (preserva bytes locais; adota metadados
+// mais recentes do servidor). Salva no localStorage sem re-disparar upload.
+function dwListenFirebase(){
+  try{
+    if(typeof FB === 'undefined' || !FB.listen) return;
+    FB.listen(DWLIB_FB_PATH, (val) => {
+      if(!val || typeof val !== 'object') return;
+      let changed = false;
+      Object.values(val).forEach(srv => {
+        if(!srv || !srv.req) return;
+        const idx = dwLib.findIndex(d => d.req === srv.req);
+        if(idx < 0){
+          dwLib.push(Object.assign({}, srv));     // entrada nova (bytes vêm depois)
+          changed = true;
+        } else {
+          const local = dwLib[idx];
+          const srvTs = srv._ts || 0, locTs = local._ts || 0;
+          if(srvTs >= locTs){                       // servidor igual/mais novo
+            dwLib[idx] = Object.assign({}, srv, { drawingB64: local.drawingB64 || null });
+            changed = true;
+          }
+        }
+      });
+      if(changed){
+        try{ const origSet = Object.getPrototypeOf(localStorage).setItem; origSet.call(localStorage, DW_KEY, JSON.stringify(dwLib)); }catch(e){}
+        const view = document.getElementById('desenhosView');
+        if(view && view.style.display !== 'none' && typeof dwRender === 'function') dwRender();
+        console.log('[dwListenFirebase] biblioteca sincronizada:', dwLib.length, 'itens');
+      }
+    });
+  }catch(e){ console.warn('[dwListenFirebase]', e); }
 }
 
 // Salvar um item analisado na biblioteca
@@ -8754,7 +8826,7 @@ function dwRender(){
     const routeClass=d.rota==='AMBOS'?'dw-route-a':d.rota.includes('TORNO')?'dw-route-t':'dw-route-c';
     const routeLabel=d.rota==='AMBOS'?'AMBOS':d.rota.includes('TORNO')?'T 2X':'C 3X';
     const cxClass=({'BAIXA':'cx-b','MEDIA':'cx-m','ALTA':'cx-a'}[(d.cx||'').toUpperCase()])||'cx-m';
-    const hasDrawing=!!d.drawingB64;
+    const hasDrawing=!!(d.drawingB64 || d.drawingName);
 
     return`<tr class="dw-row" data-idx="${idx}">
       <td class="dw-td">${hasDrawing
@@ -8787,6 +8859,7 @@ function dwRender(){
   items.forEach((d,i)=>{
     const idx=dwLib.indexOf(d);
     if(d.drawingB64) dwRenderThumb(idx,d.drawingB64,d.drawingType);
+    else if(d.drawingName) dwEnsureDrawing(idx); // veio sincronizado sem bytes → busca
   });
 }
 
@@ -8926,8 +8999,17 @@ function dwDelete(idx){
   if(_dwDelPending===idx){
     // Segundo clique = confirma
     _dwDelPending=null;
+    const removed = dwLib[idx];
     dwLib.splice(idx,1);
     dwSave();
+    // Remove do Firebase (/dwlib e os bytes em /drawings/dw_<req>)
+    try{
+      if(removed && removed.req && typeof FB!=='undefined' && FB.save){
+        FB.save(DWLIB_FB_PATH + '/' + _dwKey(removed.req), null);
+        if(typeof fbDeleteDrawing==='function') fbDeleteDrawing('dw_'+removed.req);
+        if(typeof idbDeleteDrawing==='function') idbDeleteDrawing('dw_'+removed.req);
+      }
+    }catch(e){ console.warn('[dwDelete] limpeza Firebase falhou:', e); }
     dwRender();
     toast('Desenho removido','info');
   } else {
@@ -15667,6 +15749,13 @@ async function fbBootstrap() {
   });
 
   console.log('[FB] Bootstrap completo. Listeners ativos.');
+
+  // Sincroniza a Biblioteca de Desenhos (dwLib) entre navegadores via /dwlib.
+  try{
+    dwListenFirebase();
+    // empurra a biblioteca local existente p/ a nuvem (metadados leves, idempotente)
+    setTimeout(() => { try { if(typeof dwLib !== 'undefined' && dwLib.length) dwSyncToFirebase(); } catch(e){} }, 3000);
+  }catch(e){}
 
   // Backfill automático (uma vez por navegador): envia ao Firebase os desenhos
   // que só existem no IndexedDB local, p/ aparecerem nos outros navegadores.
