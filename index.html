@@ -11239,6 +11239,93 @@ function saveDate(id, field, val) {
   if (histEl) histEl.innerHTML = renderHistory(rec);
 }
 
+// ─── Campo de data no formato BR (dd/mm/aaaa) ───────────────────────────────
+// Os <input type="date"> nativos seguem o idioma do navegador, então em
+// navegadores fora de pt-BR aparecem como aaaa-mm-dd. Este campo customizado
+// SEMPRE exibe dd/mm/aaaa, com botão de calendário, e salva internamente em ISO.
+function _isoToBr(iso){
+  if (!iso) return '';
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '';
+}
+function _brToIso(br){
+  if (!br) return '';
+  const m = String(br).trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!m) return null;            // incompleto/invalido
+  const d = +m[1], mo = +m[2], y = +m[3];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  return `${m[3]}-${m[2]}-${m[1]}`;
+}
+// Renderiza o campo. handler ∈ {'saveDate','saveDcm','saveTxt'}.
+// field é usado por saveDate/saveTxt (ignorado por saveDcm).
+function _brDateField(id, field, isoVal, handler){
+  // Escape próprio — NÃO depende do `esc` (que é local da função de detalhe).
+  const _e = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const br = _isoToBr(isoVal);
+  const hid = 'brd_' + handler + '_' + field + '_' + String(id).replace(/[^a-zA-Z0-9]/g,'');
+  return `<div class="brdate" style="display:flex;align-items:center;gap:4px;position:relative">
+    <input type="text" inputmode="numeric" placeholder="dd/mm/aaaa" maxlength="10"
+      value="${_e(br)}" class="sol-cu-input"
+      style="font-size:13px;padding:4px 6px;flex:1;min-width:0"
+      data-id="${_e(String(id))}" data-field="${_e(field)}" data-handler="${_e(handler)}"
+      oninput="brDateMask(this)" onchange="brDateCommit(this)" onblur="brDateCommit(this)">
+    <button type="button" title="Abrir calendário"
+      style="border:1px solid #ddd;background:#f7f7f7;border-radius:6px;padding:3px 7px;cursor:pointer;font-size:14px;line-height:1"
+      onclick="this.nextElementSibling.showPicker ? this.nextElementSibling.showPicker() : this.nextElementSibling.click()">📅</button>
+    <input type="date" id="${_e(hid)}" value="${_e(isoVal||'')}"
+      style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:0;bottom:0"
+      data-id="${_e(String(id))}" data-field="${_e(field)}" data-handler="${_e(handler)}"
+      onchange="brDateFromNative(this)">
+  </div>`;
+}
+// Máscara enquanto digita: insere as barras automaticamente.
+function brDateMask(el){
+  let v = el.value.replace(/\D/g,'').slice(0,8);
+  if (v.length >= 5) v = v.slice(0,2)+'/'+v.slice(2,4)+'/'+v.slice(4);
+  else if (v.length >= 3) v = v.slice(0,2)+'/'+v.slice(2);
+  el.value = v;
+}
+// Roteia a gravação pro handler certo (mesma assinatura dos antigos onchange).
+function _brDispatch(id, field, handler, iso){
+  if (handler === 'saveDate') Sol.saveDate(id, field, iso);
+  else if (handler === 'saveDcm') Sol.saveDcm(id, iso);
+  else if (handler === 'saveTxt') Sol.saveTxt(id, field, iso);
+}
+// Commit do texto dd/mm/aaaa: valida, sincroniza o input nativo e salva ISO.
+function brDateCommit(el){
+  const id = el.getAttribute('data-id');
+  const field = el.getAttribute('data-field');
+  const handler = el.getAttribute('data-handler');
+  const txt = el.value.trim();
+  if (txt === ''){ // limpou o campo
+    const native = el.parentElement.querySelector('input[type="date"]');
+    if (native) native.value = '';
+    _brDispatch(id, field, handler, '');
+    return;
+  }
+  const iso = _brToIso(txt);
+  if (iso === null){
+    el.style.borderColor = '#dc2626';
+    if (typeof toast === 'function') toast('Data inválida. Use dd/mm/aaaa.', 'warn', 2500);
+    return;
+  }
+  el.style.borderColor = '';
+  el.value = _isoToBr(iso);
+  const native = el.parentElement.querySelector('input[type="date"]');
+  if (native) native.value = iso;
+  _brDispatch(id, field, handler, iso);
+}
+// Quando escolhem pelo calendário nativo: atualiza o texto BR e salva.
+function brDateFromNative(native){
+  const id = native.getAttribute('data-id');
+  const field = native.getAttribute('data-field');
+  const handler = native.getAttribute('data-handler');
+  const iso = native.value || '';
+  const txt = native.parentElement.querySelector('input[type="text"]');
+  if (txt) txt.value = _isoToBr(iso);
+  _brDispatch(id, field, handler, iso);
+}
+
 // ─── Edita a quantidade realizada (peças efetivamente produzidas) ───
 // Limitado a [0, qt planejada]. Persiste em _mods.qtReal.
 // Atualiza "Faltam produzir" e a classe da linha na tabela (destaque âmbar
@@ -12122,21 +12209,15 @@ function openD(id) {
       <div class="sol-di"><span>Data de solicitação</span>${fmtDt(r.dt)}</div>
       <div class="sol-di sol-di-edit">
         <span>Data de entrega estimada</span>
-        <input type="date" id="dDteInput" class="sol-cu-input" style="font-size:13px;padding:4px 6px"
-          value="${esc(r.dte||'')}"
-          onchange="Sol.saveDate('${r.id}','dte', this.value)">
+        ${_brDateField(r.id, 'dte', r.dte, 'saveDate')}
       </div>
       <div class="sol-di sol-di-edit">
         <span>Data de produção</span>
-        <input type="date" id="dDtpInput" class="sol-cu-input" style="font-size:13px;padding:4px 6px"
-          value="${esc(r.dtp||'')}"
-          onchange="Sol.saveDate('${r.id}','dtp', this.value)">
+        ${_brDateField(r.id, 'dtp', r.dtp, 'saveDate')}
       </div>
       <div class="sol-di sol-di-edit">
         <span>Data entrega material</span>
-        <input type="date" id="dDemInput" class="sol-cu-input" style="font-size:13px;padding:4px 6px"
-          value="${esc(r.dem||'')}"
-          onchange="Sol.saveDate('${r.id}','dem', this.value)">
+        ${_brDateField(r.id, 'dem', r.dem, 'saveDate')}
       </div>
     </div>
 
@@ -12207,7 +12288,7 @@ function openD(id) {
       <input id="dFormsRef" placeholder="Ex: F-2026-001 ou link do forms" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px" value="${(r.formsRef||'').replace(/"/g,'&quot;')}" oninput="Sol.saveFormsRef('${r.id}', this.value)">
 
       <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;font-weight:600">Data de chegada do Material</div>
-      <input id="dDcm" type="date" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px;color:#333" value="${(r.dcm||'').replace(/"/g,'&quot;')}" onchange="Sol.saveDcm('${r.id}', this.value)">
+      <div style="margin-top:4px">${_brDateField(r.id, 'dcm', r.dcm, 'saveDcm')}</div>
 
       <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;font-weight:600">Serviço externo <span id="dPropTReq" style="color:#dc2626;${r.status==='Aprovação para compra'?'':' display:none'}">* OBRIGATÓRIO</span></div>
       <input id="dPropT" placeholder="Ex.: Fornecedor X — R$ 1.200" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px" value="${esc(r.propT)}" oninput="Sol.saveTxt('${r.id}','propT', this.value)">
@@ -12225,7 +12306,7 @@ function openD(id) {
       </div>
 
       <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;font-weight:600">Previsão entrega Fornecedor</div>
-      <input id="dPrevForn" type="date" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px;color:#333" value="${(r.prevForn||'').replace(/"/g,'&quot;')}" onchange="Sol.saveTxt('${r.id}','prevForn', this.value)">
+      <div style="margin-top:4px">${_brDateField(r.id, 'prevForn', r.prevForn, 'saveTxt')}</div>
 
       <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;font-weight:600">Nota fiscal</div>
       <input id="dNF" placeholder="Ex.: 123456" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px" value="${(r.nf||'').replace(/"/g,'&quot;')}" oninput="Sol.saveNF('${r.id}', this.value)">
