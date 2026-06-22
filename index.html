@@ -2447,6 +2447,10 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
           <span class="tb-more-ico">🧹</span>
           <span>Limpar duplicatas (executar plano)</span>
         </button>
+        <button class="tb-more-item" onclick="purgeBakedSolNew();tbMoreClose()" style="color:#7c2d12;font-weight:600">
+          <span class="tb-more-ico">♻️</span>
+          <span>Limpar sol_new já no código (anti-duplicata)</span>
+        </button>
       </div>
     </div>
     <!-- Mobile: botão menu -->
@@ -3198,8 +3202,8 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
       <div class="sol-fi"><label>Conta de custo</label><input id="nct" placeholder="Ex: 41702200"></div>
       <div class="sol-fi"><label>Código SAP</label><input id="nsp" placeholder="Ex: 85467225"></div>
       <div class="sol-fi"><label>Código do desenho</label><input id="ncd" placeholder="Ex: HN C75 028 REV 01"></div>
-      <div class="sol-fi"><label>Custo unitário (Fornecedor)</label><input id="ncu" placeholder="Ex: 620,00"></div>
-      <div class="sol-fi"><label>Custo unitário (CNC)</label><input id="ncuCnc" placeholder="Ex: 320,00"></div>
+      <div class="sol-fi"><label>Custo unitário (Fornecedor)</label><input id="ncu" inputmode="decimal" placeholder="Ex: 620,00" onfocus="this.select()" onblur="if(this.value)this.value=fmtBRLPlain(parseBRL(this.value))"></div>
+      <div class="sol-fi"><label>Custo unitário (CNC)</label><input id="ncuCnc" inputmode="decimal" placeholder="Ex: 320,00" onfocus="this.select()" onblur="if(this.value)this.value=fmtBRLPlain(parseBRL(this.value))"></div>
       <div class="sol-fi"><label>Quantidade</label><input id="nqt" type="number" min="1" placeholder="1"></div>
       <div class="sol-fi"><label>Prioridade</label><select id="npr"><option value="">Selecione...</option><option>Alta - 22 dias úteis</option><option>Alta - 35 dias úteis</option><option>Média - 29 dias úteis</option><option>Média - 40 dias úteis</option><option>Baixa - 36 dias úteis</option><option>Baixa - 45 dias úteis</option></select></div>
       <div class="sol-fi"><label>Consumo anual</label><input id="nca" placeholder="Ex: 10"></div>
@@ -9713,6 +9717,65 @@ window.exportFullState = async function() {
   }
 };
 
+// ═════════ LIMPAR sol_new JÁ "ASSADOS" NO RAW_DATA (anti-duplicata) ═════════
+// Remove de /sol_new (Firebase) qualquer ID que já exista no RAW_DATA do código.
+// Esses registros já foram consolidados pelo Iron; mantê-los no Firebase é o que
+// gera a linha duplicada (ex.: M00004). Seguro: só apaga o que JÁ está no código.
+window.purgeBakedSolNew = async function() {
+  try {
+    if (typeof fbReady === 'undefined' || !fbReady || typeof fbGetBaseUrl !== 'function') {
+      alert('⚠ Firebase não está pronto. Aguarde o indicador ficar 🟢 e tente de novo.');
+      return;
+    }
+    const url = fbGetBaseUrl() + '/sol_new.json';
+    const resp = await fetch(url);
+    const solNew = resp.ok ? (await resp.json()) : null;
+    if (!solNew || typeof solNew !== 'object') {
+      alert('✅ /sol_new está vazio no Firebase — nada para limpar.');
+      return;
+    }
+    // IDs que já existem no RAW_DATA (código)
+    const rawIds = new Set(RAW_DATA.map(r => String(r.id)));
+    // /sol_new pode ser objeto {chave: rec} ou array. Normaliza pra lista de chaves.
+    const entries = Array.isArray(solNew)
+      ? solNew.map((rec, i) => [String(i), rec])
+      : Object.entries(solNew);
+    const toRemove = entries.filter(([, rec]) => rec && rawIds.has(String(rec.id)));
+    if (!toRemove.length) {
+      alert('✅ Nenhum registro de /sol_new está duplicado no código. Nada para limpar.');
+      return;
+    }
+    const ids = toRemove.map(([, rec]) => rec.id).join(', ');
+    if (!confirm('♻️ LIMPAR DUPLICATAS DE ORIGEM\n\n' + toRemove.length +
+      ' registro(s) em /sol_new já estão no código (RAW_DATA) e estão causando linhas duplicadas:\n\n' +
+      ids + '\n\nVou remover SOMENTE esses do Firebase. Os dados continuam no app pelo RAW_DATA.\n\nConfirmar?')) return;
+
+    // Reconstrói /sol_new sem os IDs já assados, preservando o resto.
+    let cleaned;
+    if (Array.isArray(solNew)) {
+      cleaned = solNew.filter(rec => !(rec && rawIds.has(String(rec.id))));
+    } else {
+      cleaned = {};
+      for (const [k, rec] of entries) {
+        if (!(rec && rawIds.has(String(rec.id)))) cleaned[k] = rec;
+      }
+    }
+    // Salva direto no Firebase (sobrescreve /sol_new) e espelha no localStorage.
+    await FB.save('/sol_new', cleaned);
+    try {
+      const origSet = Object.getPrototypeOf(localStorage).setItem;
+      origSet.call(localStorage, SOL_NEW_KEY, JSON.stringify(Array.isArray(cleaned) ? cleaned : Object.values(cleaned)));
+    } catch(e) {}
+    if (window.Sol && Sol.reloadFromStorage) { try { Sol.reloadFromStorage(); } catch(e){} }
+    alert('✅ Pronto! Removi ' + toRemove.length + ' duplicata(s) de origem do Firebase:\n\n' +
+      ids + '\n\nAs linhas duplicadas devem sumir. Se ainda aparecer alguma, dê Ctrl+Shift+R.');
+    console.log('[purgeBakedSolNew] Removidos de /sol_new:', ids);
+  } catch (e) {
+    console.error('[purgeBakedSolNew]', e);
+    alert('❌ Erro ao limpar: ' + (e.message || e));
+  }
+};
+
 // ═════════ LIMPEZA DEFINITIVA (executar plano combinado com Lari em 19/06/2026) ═════════
 // Apaga 36 duplicatas de /sol_new, migra 3 IDs em /sol_mods e apaga 7 órfãs.
 window.cleanFirebaseNow = async function() {
@@ -10807,6 +10870,21 @@ function _loadMods(){ try{ return JSON.parse(localStorage.getItem(SOL_MODS_KEY))
 function _saveMods(m){ try{ localStorage.setItem(SOL_MODS_KEY, JSON.stringify(m)); } catch(e){} }
 function _loadNewRecs(){ try{ return JSON.parse(localStorage.getItem(SOL_NEW_KEY))||[]; } catch{ return []; } }
 function _saveNewRecs(arr){ try{ localStorage.setItem(SOL_NEW_KEY, JSON.stringify(arr)); } catch(e){} }
+/* Remove registros com ID repetido de um array, mantendo SEMPRE a primeira
+   ocorrência. Como sol_new entra antes do RAW_DATA na montagem, a versão do
+   usuário tem prioridade. Blinda a tabela contra linhas duplicadas vindas de
+   echo do listener Firebase, sol_new desatualizado ou IDs já "assados" no RAW_DATA. */
+function _dedupById(arr){
+  const seen = new Set();
+  const out = [];
+  for (const r of arr){
+    const k = String(r && r.id);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
+}
 
 // IDs deletados: lista persistente (Firebase + localStorage) pra que solicitações
 // excluídas (mesmo as do RAW_DATA) não voltem ao recarregar.
@@ -10992,13 +11070,88 @@ function addNote(id) {
   if (typeof toast === 'function') toast('✓ Nota adicionada ao histórico', 'success', 2000);
 }
 
+// ─── Parser ROBUSTO de valores BRL ───
+// Aceita virtualmente qualquer formato: "1234.56", "1234,56", "1.234,56",
+// "1,234.56", "R$ 1.234,56", "1234", "0", "0,32000" (digitação confusa), etc.
+// A heurística é: o último símbolo (vírgula ou ponto) é decimal,
+// EXCETO no caso ambíguo "X.XXX" (1-3 dígitos + ponto + exatamente 3 dígitos)
+// onde tratamos como separador de milhar.
+function parseBRL(val) {
+  if (val == null || val === '') return 0;
+  if (typeof val === 'number') return isFinite(val) ? val : 0;
+  let s = String(val).trim().replace(/[R$\s]/g, '');
+  if (!s) return 0;
+  const lastDot = s.lastIndexOf('.');
+  const lastComma = s.lastIndexOf(',');
+  if (lastDot >= 0 && lastComma >= 0) {
+    if (lastComma > lastDot) {
+      // BR: "1.234,56" — pontos são separadores de milhar, vírgula é decimal
+      s = s.replace(/\./g, '').replace(/,/g, '.');
+    } else {
+      // US: "1,234.56" — vírgulas são separadores de milhar, ponto é decimal
+      s = s.replace(/,/g, '');
+    }
+  } else if (lastComma >= 0) {
+    // Só vírgula(s): decimal BR (múltiplas vírgulas viram só a última como decimal)
+    const parts = s.split(',');
+    if (parts.length === 2) {
+      s = parts[0].replace(/\./g, '') + '.' + parts[1];
+    } else {
+      // Múltiplas vírgulas (entrada confusa): junta tudo, a última vírgula é decimal
+      const last = parts.pop();
+      s = parts.join('').replace(/\./g, '') + '.' + last;
+    }
+  } else if (lastDot >= 0) {
+    const parts = s.split('.');
+    if (parts.length > 2) {
+      // Múltiplos pontos: separadores de milhar
+      s = s.replace(/\./g, '');
+    } else {
+      // Único ponto: ambíguo. Heurística: se for "X.XXX" (X tem 1-3 dígitos, XXX tem exatamente 3) trata como milhar
+      const before = parts[0], after = parts[1];
+      if (after.length === 3 && before.length >= 1 && before.length <= 3 &&
+          /^\d+$/.test(before) && /^\d+$/.test(after)) {
+        s = s.replace('.', '');
+      }
+      // Senão, deixa como decimal (parseFloat resolve)
+    }
+  }
+  const n = parseFloat(s);
+  return isNaN(n) || !isFinite(n) ? 0 : n;
+}
+
+// ─── Máscara de moeda BR em tempo real (estilo banco/ERP) ───
+// Aplique no `oninput` de um <input>. O usuário só precisa digitar dígitos.
+// Os centavos preenchem da direita pra esquerda automaticamente.
+// Ex: digitar "5" → "0,05"; "53" → "0,53"; "532" → "5,32"; "5320" → "53,20"; "53200" → "532,00"
+function brlMaskOnInput(input) {
+  if (!input) return;
+  let raw = (input.value || '').replace(/\D/g, '');
+  // Limita pra evitar overflow (12 dígitos = até R$ 9.999.999.999,99)
+  if (raw.length > 12) raw = raw.slice(0, 12);
+  if (raw === '') { input.value = ''; return; }
+  // Remove zeros à esquerda mas preserva pelo menos 1 dígito
+  raw = raw.replace(/^0+/, '') || '0';
+  // Pad pra ter no mínimo 3 dígitos (para sempre ter centavos)
+  while (raw.length < 3) raw = '0' + raw;
+  const cents = raw.slice(-2);
+  const reais = raw.slice(0, -2);
+  // Adiciona separadores de milhar
+  const reaisFmt = reais.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  input.value = reaisFmt + ',' + cents;
+}
+
+// ─── Formata um número como string BR ("1.234,56") sem o "R$" ───
+function fmtBRLPlain(n) {
+  return (parseFloat(n) || 0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
 function editCu(id, val) {
-  // Parse "1.234,56" → 1234.56
-  const n = parseFloat(String(val).replace(/\./g,'').replace(',','.'));
+  const n = parseBRL(val);
   if (isNaN(n) || n < 0) return;
   const rec = data.find(d => String(d.id) === String(id));
   if (!rec) return;
-  const oldNum = parseFloat(String(rec.cu||0).replace(/\./g,'').replace(',','.')) || 0;
+  const oldNum = parseBRL(rec.cu);
   if (oldNum === n) return;  // sem mudança
   const fmtR = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
   _addHistory(rec, 'cu', 'Custo unit. (Fornecedor)', fmtR(oldNum), fmtR(n));
@@ -11028,11 +11181,11 @@ function editCu(id, val) {
 // Campo independente, digitado pelo usuário. Persiste em _mods.cuCnc.
 // Recalcula o "Custo total (CNC)" automaticamente: cprod = qt × cuCnc.
 function editCuCnc(id, val) {
-  const n = parseFloat(String(val).replace(/\./g,'').replace(',','.'));
+  const n = parseBRL(val);
   if (isNaN(n) || n < 0) return;
   const rec = data.find(d => String(d.id) === String(id));
   if (!rec) return;
-  const oldNum = parseFloat(String(rec.cuCnc||0).replace(/\./g,'').replace(',','.')) || 0;
+  const oldNum = parseBRL(rec.cuCnc);
   if (oldNum === n) return;
   const fmtR = v => 'R$ ' + (v||0).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
   _addHistory(rec, 'cuCnc', 'Custo unit. (CNC)', fmtR(oldNum), fmtR(n));
@@ -11360,7 +11513,7 @@ function saveChaveNF(id, val) {
 // Análogo a editCu, mas pra custo de fabricar internamente.
 // Usado pra calcular o saving = (cu × qt) − cprod
 function editCprod(id, val) {
-  const n = parseFloat(String(val).replace(/\./g,'').replace(',','.'));
+  const n = parseBRL(val);
   if (isNaN(n) || n < 0) return;
   const rec = data.find(d => String(d.id) === String(id));
   if (!rec) return;
@@ -11582,8 +11735,9 @@ let data = (function(){
     // Base RAW_DATA com mods aplicados por cima (exclui os IDs já presentes em sol_new)
     ...RAW_DATA.filter(r => !newRecIds.has(String(r.id))).map(r => _hydrate(r, _mods, false))
   ];
-  // Filtra IDs marcados como deletados (persistente via Firebase)
-  return initial.filter(r => !deletedSet.has(String(r.id)));
+  // Filtra IDs marcados como deletados (persistente via Firebase) e remove
+  // qualquer ID repetido (mantém a 1ª ocorrência = versão do usuário).
+  return _dedupById(initial.filter(r => !deletedSet.has(String(r.id))));
 })();
 
 // No init, depois que o Firebase tá pronto, tenta carregar mods remotos
@@ -11614,10 +11768,10 @@ function reloadFromStorage() {
   const fresh_newRecs = _loadNewRecs();
   const deletedSet = new Set(_loadDeletedIds().map(String));
   const newRecIds = new Set(fresh_newRecs.map(r => String(r.id)));
-  const newData = [
+  const newData = _dedupById([
     ...fresh_newRecs.map(r => _hydrate(r, fresh_mods, true)),
     ...RAW_DATA.filter(r => !newRecIds.has(String(r.id))).map(r => _hydrate(r, fresh_mods, false))
-  ].filter(r => !deletedSet.has(String(r.id)));
+  ].filter(r => !deletedSet.has(String(r.id))));
   // Substitui o conteúdo do array `data` mantendo a referência
   data.length = 0;
   newData.forEach(item => data.push(item));
@@ -11902,9 +12056,10 @@ function openD(id) {
         <span>Custo unitário (Fornecedor)</span>
         <span class="sol-edit-cu">
           R$ <input id="dCuInput" class="sol-cu-input" type="text" inputmode="decimal"
-            value="${(parseFloat(String(r.cu||0).replace(/\./g,'').replace(',','.'))||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}"
-            onchange="Sol.editCu('${r.id}', this.value)"
-            onblur="this.value=(parseFloat(this.value.replace(/\\./g,'').replace(',','.'))||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})">
+            value="${fmtBRLPlain(parseBRL(r.cu))}"
+            onfocus="this.select()"
+            onblur="this.value=fmtBRLPlain(parseBRL(this.value))"
+            onchange="Sol.editCu('${r.id}', this.value)">
         </span>
       </div>
       <div class="sol-di sol-di-edit">
@@ -11913,16 +12068,17 @@ function openD(id) {
           R$ <input id="dCtotInput" class="sol-cu-input" type="text" readonly
             style="background:#f3f4f6;color:#374151;cursor:not-allowed"
             title="Calculado automaticamente: Quantidade × Custo unitário (Fornecedor)"
-            value="${((parseInt(r.qt,10)||0) * (parseFloat(String(r.cu||0).replace(/\./g,'').replace(',','.'))||0)).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}">
+            value="${fmtBRLPlain((parseInt(r.qt,10)||0) * parseBRL(r.cu))}">
         </span>
       </div>
       <div class="sol-di sol-di-edit">
         <span>Custo unitário (CNC)</span>
         <span class="sol-edit-cu">
           R$ <input id="dCuCncInput" class="sol-cu-input" type="text" inputmode="decimal"
-            value="${(parseFloat(String(r.cuCnc||0).replace(/\./g,'').replace(',','.'))||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}"
-            onchange="Sol.editCuCnc('${r.id}', this.value)"
-            onblur="this.value=(parseFloat(this.value.replace(/\\./g,'').replace(',','.'))||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})">
+            value="${fmtBRLPlain(parseBRL(r.cuCnc))}"
+            onfocus="this.select()"
+            onblur="this.value=fmtBRLPlain(parseBRL(this.value))"
+            onchange="Sol.editCuCnc('${r.id}', this.value)">
         </span>
       </div>
       <div class="sol-di sol-di-edit">
@@ -11931,7 +12087,7 @@ function openD(id) {
           R$ <input id="dCprodInput" class="sol-cu-input" type="text" readonly
             style="background:#f3f4f6;color:#374151;cursor:not-allowed"
             title="Calculado automaticamente: Quantidade × Custo unitário (CNC)"
-            value="${((parseInt(r.qt,10)||0) * (parseFloat(String(r.cuCnc||0).replace(/\./g,'').replace(',','.'))||0)).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}">
+            value="${fmtBRLPlain((parseInt(r.qt,10)||0) * parseBRL(r.cuCnc))}">
         </span>
       </div>
       <div class="sol-di"><span>Quantidade planejada</span>${esc(r.qt)||'—'}</div>
@@ -13348,10 +13504,12 @@ function saveN() {
     obs:document.getElementById('nob').value, status:'Pendente', files:[...newFiles],
     _isNew: true
   };
+  // Normaliza os custos do formulário (aceita "1.234,56", "1234.56", etc.)
+  rec.cu = parseBRL(rec.cu);
+  rec.cuCnc = parseBRL(rec.cuCnc);
   // Calcula Custo total (CNC) = Qtd × Custo unitário (CNC)
   const _qtNum = parseInt(rec.qt, 10) || 0;
-  const _cuCncNum = parseFloat(String(rec.cuCnc||'').replace(/\./g,'').replace(',','.')) || 0;
-  rec.cprod = _qtNum * _cuCncNum;
+  rec.cprod = _qtNum * rec.cuCnc;
   data.unshift(rec);
   // ── CRITICAL: persistir o registro completo no localStorage (SOL_NEW_KEY)
   // pra ele sobreviver reload. _persistRec abaixo só salva campos mutáveis.
@@ -13821,9 +13979,17 @@ return {
   openBulkAttach, closeBulkAttach,
   _bulkAtDrop, _bulkAtPicker,
   // Criar solicitação relacionada (800 → 800.1)
-  createRelated
+  createRelated,
+  // Utilitários de formatação BRL (expostos pra uso no DOM via Sol.parseBRL etc.)
+  parseBRL, brlMaskOnInput, fmtBRLPlain
 };
 })();
+
+// Expõe as helpers de moeda BRL globalmente pra que os handlers inline
+// (oninput="brlMaskOnInput(this)") funcionem fora do escopo do IIFE.
+window.parseBRL = (v) => window.Sol.parseBRL(v);
+window.brlMaskOnInput = (input) => window.Sol.brlMaskOnInput(input);
+window.fmtBRLPlain = (n) => window.Sol.fmtBRLPlain(n);
 
 
 /* ════════════════════════════════════════════════════════════════════
