@@ -2787,7 +2787,7 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
   <!-- Linha 2: Fábricas Brasil (full width) -->
   <div class="dash-grid dash-grid-1">
     <div class="dash-card">
-      <div class="dash-card-header"><span data-i18n="dash.chart.sitesHeader">Fábricas Brasil — Custo por Site</span> <span style="font-weight:400;font-size:10.5px;opacity:.75" data-i18n="dash.chart.apenasEncerrados">(apenas Encerrados)</span></div>
+      <div class="dash-card-header"><span data-i18n="dash.chart.sitesHeader">Diferença de custo por fábrica</span></div>
       <div class="dash-card-body" id="dashChartSites"></div>
     </div>
   </div>
@@ -3374,7 +3374,7 @@ const I18N = {
     'dash.chart.dif': 'DIFERENÇA DE CUSTO',
     'dash.chart.difLegenda': 'Diferença (Fornec - CNC)',
     'dash.chart.statusHeader': 'Distribuição de Status',
-    'dash.chart.sitesHeader': 'Fábricas Brasil — Custo por Site',
+    'dash.chart.sitesHeader': 'Diferença de custo por fábrica',
     'dash.chart.pilarHeader': 'Solicitações por Pilar',
     'dash.chart.volumeHeader': 'Volume de Solicitações por Site',
     'dash.chart.semEncerradas': 'Sem solicitações Encerradas no período',
@@ -3676,7 +3676,7 @@ const I18N = {
     'dash.chart.dif': 'COST DIFFERENCE',
     'dash.chart.difLegenda': 'Difference (Supplier - CNC)',
     'dash.chart.statusHeader': 'Status Distribution',
-    'dash.chart.sitesHeader': 'Brazil Plants — Cost by Site',
+    'dash.chart.sitesHeader': 'Cost difference by plant',
     'dash.chart.pilarHeader': 'Requests by Pillar',
     'dash.chart.volumeHeader': 'Request Volume by Site',
     'dash.chart.semEncerradas': 'No Closed requests in the period',
@@ -16055,6 +16055,8 @@ function _dashCollect(){
     const qt  = parseFloat(r.qt || 0) || 0;
     out.push({
       id: r.id,
+      formsRef: r.formsRef || '',
+      p: (r.p || '').trim(),
       site: (r.pl || '—').trim(),
       pilar: (r.ar || '—').trim(),
       status: mod.status || 'Pendente',
@@ -16285,13 +16287,17 @@ function _dashRenderSites(data){
   const closed = _dashSavingData(data);
   const PLANTS = ['Aguaí','Garanhuns','Igarassu','Indaiatuba','Pouso Alegre','Suape','Valinhos','Vinhedo'];
   const bySite = {};
-  PLANTS.forEach(p => { bySite[p] = {forn:0, cnc:0, n:0, nWithCnc:0}; });
+  PLANTS.forEach(p => { bySite[p] = {forn:0, cnc:0, n:0, nWithCnc:0, items:[]}; });
   closed.forEach(d => {
-    if(!bySite[d.site]) bySite[d.site] = {forn:0, cnc:0, n:0, nWithCnc:0};
+    if(!bySite[d.site]) bySite[d.site] = {forn:0, cnc:0, n:0, nWithCnc:0, items:[]};
     bySite[d.site].forn += d.totFornec;
     bySite[d.site].cnc  += d.totCNC;
     bySite[d.site].n++;
     if(d.totCNC > 0) bySite[d.site].nWithCnc++;
+    bySite[d.site].items.push({
+      id: d.id, formsRef: d.formsRef, p: d.p,
+      forn: d.totFornec, cnc: d.totCNC, saving: d.totFornec - d.totCNC
+    });
   });
   // Diagnóstico no console (uma vez por render)
   const totalWithCnc = closed.filter(d => d.totCNC > 0).length;
@@ -16299,6 +16305,11 @@ function _dashRenderSites(data){
   // ordena por totFornec desc
   const sites = Object.keys(bySite).filter(s => bySite[s].n > 0)
     .sort((a,b) => bySite[b].forn - bySite[a].forn);
+  // Disponibiliza os dados por site p/ os tooltips (quais formulários entram em cada site)
+  window._dashSiteData = sites.map(s => ({
+    site: s, forn: bySite[s].forn, cnc: bySite[s].cnc,
+    n: bySite[s].n, nWithCnc: bySite[s].nWithCnc, items: bySite[s].items
+  }));
   const el = document.getElementById('dashChartSites');
   if(!el) return;
   if(sites.length === 0){
@@ -16375,6 +16386,13 @@ function _dashRenderSites(data){
     svg += `</g>`;
   });
 
+  // ÁREAS DE HOVER (transparentes, por cima de tudo) — disparam o tooltip do site
+  sites.forEach((s,i) => {
+    const gx = padL + i * groupW;
+    svg += `<rect x="${gx}" y="0" width="${groupW}" height="${H - padB}" fill="transparent" style="cursor:pointer" `
+         + `onmouseenter="_dashSiteTipShow(event, ${i})" onmousemove="_dashSiteTipMove(event)" onmouseleave="_dashSiteTipHide()"></rect>`;
+  });
+
   // LEGENDA (topo)
   svg += `<g transform="translate(${padL}, 24)">
     <rect width="11" height="11" fill="${DASH_COLORS.forn}" rx="2"/>
@@ -16389,7 +16407,65 @@ function _dashRenderSites(data){
   el.innerHTML = svg;
 }
 
-/* ─── Por Pilar (barras verticais) ─── */
+/* ─── Tooltip do gráfico "Fábricas Brasil — Custo por Site" ───
+   Mostra QUAIS formulários (Forms Ref / Nº / peça) entram em cada site. */
+function _dashSiteTipEl(){
+  let el = document.getElementById('dashSiteTooltip');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'dashSiteTooltip';
+    el.style.cssText = 'position:fixed;z-index:99999;pointer-events:none;display:none;max-width:360px;'
+      + 'background:#1a1a1a;color:#fff;border-radius:9px;padding:10px 12px;font-size:12px;line-height:1.45;'
+      + 'box-shadow:0 10px 30px rgba(0,0,0,.34);font-family:system-ui,-apple-system,sans-serif';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function _dashTipBRL(v){ return 'R$ ' + (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function _dashSiteTipShow(evt, idx){
+  const d = (window._dashSiteData || [])[idx];
+  if(!d) return;
+  const el = _dashSiteTipEl();
+  const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const items = d.items.slice().sort((a,b) => (b.forn - b.cnc) - (a.forn - a.cnc));
+  const MAXROWS = 14;
+  let rows = items.slice(0, MAXROWS).map(it => {
+    const ref = it.formsRef ? ('Forms ' + esc(it.formsRef)) : esc(it.id);
+    const nome = it.p ? (' · ' + esc(it.p.length > 36 ? it.p.slice(0,36) + '…' : it.p)) : '';
+    const sav = it.forn - it.cnc;
+    const col = sav >= 0 ? '#34d399' : '#f87171';
+    return `<div style="display:flex;justify-content:space-between;gap:10px;padding:1px 0">`
+      + `<span style="opacity:.92">${ref}${nome}</span>`
+      + `<span style="color:${col};font-weight:600;white-space:nowrap">${_dashTipBRL(sav)}</span></div>`;
+  }).join('');
+  if(items.length > MAXROWS) rows += `<div style="opacity:.6;margin-top:3px">+${items.length - MAXROWS} formulário(s) a mais…</div>`;
+  const savTot = d.forn - d.cnc;
+  el.innerHTML =
+    `<div style="font-weight:700;margin-bottom:5px;font-size:12.5px">${esc(d.site)} `
+      + `<span style="opacity:.6;font-weight:400">· ${d.n} formulário${d.n>1?'s':''} · ${d.nWithCnc} c/ CNC</span></div>`
+    + `<div style="display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid rgba(255,255,255,.16);padding-bottom:4px;margin-bottom:4px">`
+      + `<span>Fornecedor: <b>${_dashTipBRL(d.forn)}</b></span><span>CNC: <b>${_dashTipBRL(d.cnc)}</b></span></div>`
+    + rows
+    + `<div style="border-top:1px solid rgba(255,255,255,.16);margin-top:5px;padding-top:4px;display:flex;justify-content:space-between;font-weight:700">`
+      + `<span>Economia</span><span style="color:${savTot>=0?'#34d399':'#f87171'}">${_dashTipBRL(savTot)}</span></div>`;
+  el.style.display = 'block';
+  _dashSiteTipMove(evt);
+}
+function _dashSiteTipMove(evt){
+  const el = document.getElementById('dashSiteTooltip');
+  if(!el || el.style.display === 'none') return;
+  const pad = 14;
+  const r = el.getBoundingClientRect();
+  let x = evt.clientX + pad, y = evt.clientY + pad;
+  if(x + r.width  > window.innerWidth  - 8) x = evt.clientX - r.width  - pad;
+  if(y + r.height > window.innerHeight - 8) y = evt.clientY - r.height - pad;
+  el.style.left = Math.max(8, x) + 'px';
+  el.style.top  = Math.max(8, y) + 'px';
+}
+function _dashSiteTipHide(){
+  const el = document.getElementById('dashSiteTooltip');
+  if(el) el.style.display = 'none';
+}
 function _dashRenderPilar(data){
   const counts = {};
   data.forEach(d => {
