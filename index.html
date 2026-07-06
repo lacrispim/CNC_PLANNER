@@ -9314,6 +9314,7 @@ const FB = (function() {
 
   return { init, save, saveDebounced, saveKey, listen, suppressListeners, loadAll, loadPath, setStatus,
            healthCheck, reportError,
+           get db() { return db; },
            isConnected: () => connected,
            getStats: () => ({ ..._stats, lastError: _lastError, lastSyncAt: _lastSyncAt }) };
 })();
