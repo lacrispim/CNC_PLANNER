@@ -14475,7 +14475,7 @@ function _formsInboxProcess(key, v) {
       // Limpa a caixa de entrada (o claim fica 1 min pra bloquear retardatários)
       try { FB.db.ref('/forms_inbox/' + key).remove(); } catch(e){}
       setTimeout(() => { try { FB.db.ref('/forms_inbox_claims/' + key).remove(); } catch(e){} }, 60000);
-      renderStats(); initFilters(); go();
+      if (_inited) { renderStats(); initFilters(); go(); }
       if (typeof toast === 'function') toast('📋 Solicitação #' + ref + ' recebida do Forms: ' + rec.p, 'info', 6000);
       console.log('[formsInbox] ✅ #' + ref + ' importada do Forms');
     } catch(e) { console.warn('[formsInbox] falha ao importar #' + ref + ':', e); }
@@ -14496,6 +14496,11 @@ function formsInboxStart() {
 //    que estão DENTRO deste módulo Sol (IIFE). Sem isto, o navegador não as acha. ──
 window.exportSolExcel = exportSolExcel;
 window.formsInboxStart = formsInboxStart;
+
+// ── Liga a importação automática do Forms na CARGA DA PÁGINA ──
+// (independe de abrir a aba Solicitações; 6s de folga p/ Firebase conectar
+//  e /sol_new carregar. O guard _formsInboxOn evita ligação dupla via init.)
+setTimeout(() => { try { formsInboxStart(); } catch(e){ console.warn('[formsInbox] auto-start:', e); } }, 6000);
 window.ensureXLSX = ensureXLSX;
 window._downloadBlob = _downloadBlob;
 window.brDateMask = brDateMask;
