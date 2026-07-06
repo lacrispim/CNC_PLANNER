@@ -2375,7 +2375,6 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
     <div class="tab-group tab-group-gerencial">
       <span class="tab-group-label-v2" data-i18n="tab.gerencial.label">GERENCIAL</span>
       <button class="tab tab-fabrica" onclick="setView('sites')" title="Acesso da fábrica — gestão de capacidade mensal por site" data-i18n="tab.sites">🏭 SITES</button>
-      <button class="tab tab-financas" onclick="setView('financas')" title="Custos — orçamento, custos e aprovações por fábrica" data-i18n="tab.custos">💰 CUSTOS</button>
       <button class="tab tab-visao tab-fabrica" onclick="setView('visao')" title="Visão Geral — status de produção por fábrica (Concluídas, Em Produção, Backlog)" data-i18n="tab.visao">📋 VISÃO GERAL</button>
       <button class="tab tab-fabrica" onclick="setView('dashboard')" title="Dashboard — gráficos e indicadores" data-i18n="tab.dashboard">📊 DASHBOARD</button>
     </div>
@@ -2632,48 +2631,6 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
 </div>
 
 <!-- FINANÇAS TAB -->
-<div class="fn-container" id="financasView" style="display:none">
-  <div class="fn-layout">
-    <!-- COLUNA PRINCIPAL -->
-    <div class="fn-main">
-      <div class="fn-toolbar">
-        <div class="fn-toolbar-l">
-          <h2 class="fn-title" data-i18n="fn.title">💰 Custos por Fábrica</h2>
-          <span class="fn-sub" id="fnSub">Custos, aprovações e orçamento por planta</span>
-        </div>
-        <div class="fn-toolbar-r">
-          <label class="fn-month-lbl" data-i18n="fn.mes">Mês</label>
-          <select class="fn-month-sel" id="fnMonthSel" onchange="fnRender()"></select>
-          <button class="fn-btn-budget" onclick="fnOpenBudgetModal()" title="Cadastrar orçamento mensal por fábrica" data-i18n="fn.orcamento">⚙ Orçamento</button>
-          <button class="fn-btn-pool" id="fnBtnPool" onclick="fnTogglePool()" title="Mostrar/esconder pool">
-            <span id="fnBtnPoolIcon">📦</span> <span id="fnBtnPoolLbl">Pool (0)</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Resumo geral Unilever -->
-      <div class="fn-summary" id="fnSummary"></div>
-
-      <!-- Tabela linear de fábricas -->
-      <div class="fn-table-wrap">
-        <table class="fn-tbl" id="fnTbl"></table>
-      </div>
-    </div>
-
-    <!-- SIDEBAR POOL (direita) -->
-    <aside class="fn-sidebar" id="fnSidebar">
-      <div class="fn-sidebar-hd">
-        <div>
-          <div class="fn-sidebar-title">📦 <span data-i18n="fn.pool">Pool</span></div>
-          <div class="fn-sidebar-sub" id="fnSidebarSub" data-i18n="fn.poolEmpty">aguardando alocação</div>
-        </div>
-        <button class="fn-sidebar-close" onclick="fnTogglePool()" title="Esconder pool">×</button>
-      </div>
-      <div class="fn-sidebar-hint" data-i18n="fn.dragHere">Arraste para a linha da fábrica correspondente abaixo ↙</div>
-      <div class="fn-sidebar-body" id="fnSidebarBody"></div>
-    </aside>
-  </div>
-</div>
 
 <!-- ════════════════════ VISÃO GERAL — status de produção por fábrica ════════════════════ -->
 <div class="vg-container" id="visaoView" style="display:none">
@@ -2711,22 +2668,6 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
 </div>
 
 <!-- Modal: Cadastro de orçamento mensal por fábrica -->
-<div class="ov" id="fnBudgetOv" style="display:none" onclick="if(event.target===this)fnCloseBudgetModal()">
-  <div class="ov-box" style="width:680px;max-height:88vh" onclick="event.stopPropagation()">
-    <div class="ov-hd">
-      <div class="ov-hd-l">
-        <h3 data-i18n="fn.budget.title">⚙ Orçamento mensal por fábrica</h3>
-        <span class="ov-hd-sub" id="fnBudgetSub">—</span>
-      </div>
-      <button class="ov-close" onclick="fnCloseBudgetModal()">×</button>
-    </div>
-    <div class="ov-body" id="fnBudgetBody"></div>
-    <div class="ov-foot">
-      <button class="ov-btn-secondary" onclick="fnCloseBudgetModal()" data-i18n="fn.budget.cancelar">Cancelar</button>
-      <button class="ov-btn-primary" onclick="fnSaveBudgets()" data-i18n="fn.budget.salvar">Salvar orçamentos</button>
-    </div>
-  </div>
-</div>
 
 <!-- DESENHOS TAB -->
 <!-- DASHBOARD VIEW -->
@@ -9384,6 +9325,7 @@ const FB_KEY_MAP = {
   'cnc_sol_new_v1':       '/sol_new',
   'cnc_sol_deleted_v1':   '/sol_deleted',
   'cnc_fn_budgets_v1':    '/budgets',
+  'cnc_fn_fixed_v1':      '/fixed_costs',
   'cnc_os_config_v1':     '/config'
 };
 
@@ -10030,7 +9972,7 @@ async function _resetByUrl() {
   if (typeof firebase !== 'undefined' && firebase.apps && firebase.apps.length) {
     try {
       const db = firebase.database();
-      const fbPaths = ['/sol_new', '/sol_mods', '/backlog', '/budgets', '/drawings', '/config', '/migrations'];
+      const fbPaths = ['/sol_new', '/sol_mods', '/backlog', '/budgets', '/fixed_costs', '/drawings', '/config', '/migrations'];
       const fbPromises = fbPaths.map(p =>
         db.ref(p).set(null)
           .then(() => console.log('[RESET URL]  · Firebase apagado:', p))
@@ -14392,6 +14334,10 @@ function init() {
       const n = window.syncSolToBacklog();
       console.log('[Sol.init] bridge auto-sync ao inicializar → ', n, 'mudanças');
     }
+
+    // Liga a importação automática de respostas do Microsoft Forms
+    // (5s de folga pra /sol_new do Firebase carregar antes — evita falso "não-duplicado")
+    setTimeout(() => { try { formsInboxStart(); } catch(e){ console.warn('[formsInbox] start:', e); } }, 5000);
   }, 200);
 }
 
@@ -14449,9 +14395,107 @@ function createRelated(srcId) {
   setTimeout(() => openD(newId), 100);
 }
 
+/* ════════════ IMPORTAÇÃO AUTOMÁTICA — MICROSOFT FORMS (via /forms_inbox) ════════════
+   O Power Automate grava cada resposta do Forms em /forms_inbox/{responseId} no Firebase.
+   Este módulo escuta esse caminho, converte cada entrada em uma solicitação completa
+   (mesma estrutura do saveN), evita duplicatas com claim atômico e limpa a caixa de entrada.
+   Payload esperado (todas as chaves opcionais, strings):
+   { sl, em, pl, ar, os, ct, sp, cd, cu, p, qt, pr, ca, dtn, div, obs, ts }            */
+
+function _formsInboxBuildRec(recId, ref, v) {
+  v = v || {};
+  const d = new Date();
+  const hoje = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const extras = [];
+  if (v.div) extras.push('Divisão: ' + String(v.div).trim());
+  if (v.dtn) extras.push('Data prevista (Forms): ' + String(v.dtn).trim());
+  const obs = [String(v.obs || '').trim(), extras.join(' · ')].filter(Boolean).join(' · ');
+  return {
+    id: String(recId),
+    dt: hoje,
+    p: String(v.p || '').trim().toUpperCase() || '(PEÇA SEM NOME — VER FORMS)',
+    pl: String(v.pl || '').trim(),
+    ar: String(v.ar || '').trim() || 'PM',
+    os: String(v.os || '').trim(),
+    ct: String(v.ct || '').trim(),
+    sp: String(v.sp || '').trim(),
+    cd: String(v.cd || '').trim(),
+    cu: parseBRL(v.cu),
+    cuCnc: 0,
+    cprod: 0,
+    qt: String(parseInt(v.qt, 10) || 1),
+    pr: String(v.pr || '').trim(),
+    ca: String(v.ca || '').trim(),
+    sl: String(v.sl || '').trim(),
+    em: String(v.em || '').trim(),
+    nr: '',
+    obs,
+    status: 'Pendente',
+    files: [],
+    formsRef: String(ref),
+    _isNew: true,
+    _fromForms: true
+  };
+}
+
+function _formsInboxProcess(key, v) {
+  v = v || {};
+  // O fluxo envia POST para /forms_inbox.json (URL fixa) com o ID da resposta no corpo ("ref").
+  // Fallbacks: sem "ref" → usa a chave do push; id da solicitação → gera M001, M002...
+  const rawRef = (v.ref != null && String(v.ref).trim()) ? String(v.ref).trim() : '';
+  const ref = rawRef || String(key);
+  const recId = rawRef || _nextManualId();
+  // Dedupe: já existe registro com este id ou formsRef? Só limpa a entrada.
+  const dup = data.some(r => String(r.id) === ref || String(r.formsRef || '') === ref);
+  if (dup) {
+    try { FB.db.ref('/forms_inbox/' + key).remove(); } catch(e){}
+    try { FB.db.ref('/forms_inbox_claims/' + key).remove(); } catch(e){}
+    console.log('[formsInbox] #' + ref + ' já existe — inbox limpo');
+    return;
+  }
+  // Claim atômico: garante que só UM navegador importa esta resposta.
+  // Claims com mais de 10 min são considerados órfãos (navegador travou) e podem ser tomados.
+  if (!window._cncClientId) window._cncClientId = 'c' + Math.random().toString(36).slice(2);
+  FB.db.ref('/forms_inbox_claims/' + key).transaction(cur => {
+    if (cur && cur.t && (Date.now() - cur.t) < 600000) return; // reivindicado recentemente → aborta
+    return { c: window._cncClientId, t: Date.now() };
+  }, (err, committed, snap) => {
+    if (err || !committed) return; // outro navegador ficou responsável
+    const claimed = snap && snap.val();
+    if (!claimed || claimed.c !== window._cncClientId) return;
+    try {
+      const rec = _formsInboxBuildRec(recId, ref, v);
+      data.unshift(rec);
+      try {
+        const newRecs = _loadNewRecs();
+        newRecs.unshift(rec);
+        _saveNewRecs(newRecs);
+      } catch(e) { console.warn('[formsInbox] persist local falhou:', e); }
+      _persistRec(rec);
+      // Limpa a caixa de entrada (o claim fica 1 min pra bloquear retardatários)
+      try { FB.db.ref('/forms_inbox/' + key).remove(); } catch(e){}
+      setTimeout(() => { try { FB.db.ref('/forms_inbox_claims/' + key).remove(); } catch(e){} }, 60000);
+      renderStats(); initFilters(); go();
+      if (typeof toast === 'function') toast('📋 Solicitação #' + ref + ' recebida do Forms: ' + rec.p, 'info', 6000);
+      console.log('[formsInbox] ✅ #' + ref + ' importada do Forms');
+    } catch(e) { console.warn('[formsInbox] falha ao importar #' + ref + ':', e); }
+  });
+}
+
+function formsInboxStart() {
+  if (window._formsInboxOn) return;
+  if (typeof FB === 'undefined' || !FB || !FB.db) { setTimeout(formsInboxStart, 3000); return; }
+  window._formsInboxOn = true;
+  FB.db.ref('/forms_inbox').on('child_added', snap => {
+    try { _formsInboxProcess(snap.key, snap.val()); } catch(e){ console.warn('[formsInbox]', e); }
+  });
+  console.log('[formsInbox] 👂 listener ativo em /forms_inbox');
+}
+
 // ── Expor ao window funções chamadas por handlers inline (onclick/oninput/onchange)
 //    que estão DENTRO deste módulo Sol (IIFE). Sem isto, o navegador não as acha. ──
 window.exportSolExcel = exportSolExcel;
+window.formsInboxStart = formsInboxStart;
 window.ensureXLSX = ensureXLSX;
 window._downloadBlob = _downloadBlob;
 window.brDateMask = brDateMask;
@@ -14519,6 +14563,27 @@ function fnSaveBudgetsObj(obj) {
   localStorage.setItem(FN_BUDGET_KEY, JSON.stringify(obj));
 }
 
+// ─── Custo fixo manual por fábrica/mês ───
+// Estrutura: { 'YYYY-MM': { 'Planta': valor } } — igual ao orçamento.
+const FN_FIXED_KEY = 'cnc_fn_fixed_v1';
+function fnLoadFixed() {
+  try { return JSON.parse(localStorage.getItem(FN_FIXED_KEY)) || {}; }
+  catch { return {}; }
+}
+function fnSaveFixedObj(obj) {
+  localStorage.setItem(FN_FIXED_KEY, JSON.stringify(obj));
+}
+// Edita o custo fixo de uma fábrica num mês (chamado inline pela tabela).
+function fnEditFixed(planta, month, rawVal) {
+  if (!planta || !month || month === 'all') return;
+  const val = parseFloat(String(rawVal).replace(/\./g,'').replace(',','.')) || 0;
+  const obj = fnLoadFixed();
+  if (!obj[month]) obj[month] = {};
+  obj[month][planta] = val;
+  fnSaveFixedObj(obj);
+  setTimeout(() => fnRender(), 300);
+}
+
 // Mês selecionado atual (yyyy-mm). Default: mês corrente.
 function fnCurrentMonth() {
   const sel = document.getElementById('fnMonthSel');
@@ -14560,7 +14625,7 @@ function fnIsComplete(sol) {
 function fnCalcByPlant(monthKey) {
   const out = {};
   FN_PLANTAS.forEach(p => {
-    out[p] = { approved: 0, ordered: 0, received: 0, billed: 0, prodCost: 0, saving: 0, count: 0, withNF: 0, items: [], poolItems: [] };
+    out[p] = { approved: 0, ordered: 0, received: 0, billed: 0, prodCost: 0, saving: 0, count: 0, withNF: 0, varCost: 0, varForn: 0, encCount: 0, items: [], poolItems: [] };
   });
 
   if (!window.Sol || !Sol.getData) return out;
@@ -14580,6 +14645,21 @@ function fnCalcByPlant(monthKey) {
     const saving = total - cprod;
     const allocMonth = sol._savingMonth || '';
     const complete = fnIsComplete(sol);
+
+    // CONSOLIDADO DAS ENCERRADAS (atribuído pelo mês da DATA DE PRODUÇÃO; fallback: data de solicitação).
+    //  • Custo Interno (CNC)  = Qtd × Custo unit. CNC        → o que gastamos pra produzir internamente
+    //  • Custo Externo (Forn) = Qtd × Custo unit. Fornecedor → o que o fornecedor cobraria pelas mesmas peças
+    // Calculado direto da solicitação (igual ao detalhe), sem depender de campos pré-somados.
+    if (sol.status === 'Encerrado') {
+      const prodIso = sol.dtp || sol.dt || '';
+      const prodMonth = String(prodIso).slice(0,7);
+      if (monthKey === 'all' || prodMonth === monthKey) {
+        const cuCncNum = parseFloat(sol.cuCnc) || 0;
+        out[planta].varCost += qt * cuCncNum;   // interno (CNC)
+        out[planta].varForn += total;           // externo (Fornecedor) = qt × cu (já calculado acima)
+        out[planta].encCount++;
+      }
+    }
 
     const itemBase = {
       id: sol.id,
@@ -14689,18 +14769,27 @@ function fnRender() {
 
   const byPlant = fnCalcByPlant(month);
   const budgets = fnLoadBudgets();
+  const fixedObj = fnLoadFixed();
 
   // ── RESUMO GERAL UNILEVER ──
-  let totalApproved = 0, totalBilled = 0, totalBudget = 0, totalCount = 0, totalSaving = 0;
+  let totalApproved = 0, totalBilled = 0, totalBudget = 0, totalCount = 0, totalSaving = 0, totalFixed = 0, totalVar = 0, totalEnc = 0, totalForn = 0;
   FN_PLANTAS.forEach(p => {
     const v = byPlant[p];
     totalApproved += v.approved;
     totalBilled += v.billed;
     totalSaving += v.saving;
     totalCount += v.count;
+    totalVar += v.varCost;
+    totalForn += v.varForn;
+    totalEnc += v.encCount;
     const budget = (budgets[month] && budgets[month][p]) || 0;
     totalBudget += budget;
+    let fixed = 0;
+    if (isAll) { Object.keys(fixedObj).forEach(mk => { fixed += (fixedObj[mk] && fixedObj[mk][p]) || 0; }); }
+    else fixed = (fixedObj[month] && fixedObj[month][p]) || 0;
+    totalFixed += fixed;
   });
+  const totalCusto = totalFixed + totalVar;
 
   const balance = totalBudget - totalApproved;
   const savingPct = totalApproved > 0 ? Math.round((totalSaving / totalApproved) * 100) : 0;
@@ -14732,6 +14821,31 @@ function fnRender() {
         <div class="fn-sum-val" style="color:${totalSaving>=0?'#059669':'#dc2626'}">${fnFmtBig(Math.abs(totalSaving))}</div>
         <div class="fn-sum-meta">${totalSaving>=0?(savingPct+'% '+t('fn.kpi.savingTotalSub')):t('fn.prejuizo')}</div>
       </div>
+      <div class="fn-sum-card" style="border-left:3px solid #2c5aa0">
+        <div class="fn-sum-lbl">🏪 Custo Externo (Forn)</div>
+        <div class="fn-sum-val" style="color:#2c5aa0">${fnFmtBig(totalForn)}</div>
+        <div class="fn-sum-meta">${totalEnc} encerrada(s)</div>
+      </div>
+      <div class="fn-sum-card" style="border-left:3px solid #0ea5e9">
+        <div class="fn-sum-lbl">⚙ Custo Interno (CNC)</div>
+        <div class="fn-sum-val" style="color:#0284c7">${fnFmtBig(totalVar)}</div>
+        <div class="fn-sum-meta">o que foi gasto pra produzir</div>
+      </div>
+      <div class="fn-sum-card" style="border-left:3px solid ${(totalForn-totalVar)>=0?'#059669':'#dc2626'}">
+        <div class="fn-sum-lbl">💰 Economia (Forn − CNC)</div>
+        <div class="fn-sum-val" style="color:${(totalForn-totalVar)>=0?'#059669':'#dc2626'}">${fnFmtBig(totalForn-totalVar)}</div>
+        <div class="fn-sum-meta">${totalForn>0?Math.round(((totalForn-totalVar)/totalForn)*100)+'% vs externo':'—'}</div>
+      </div>
+      <div class="fn-sum-card" style="border-left:3px solid #6366f1">
+        <div class="fn-sum-lbl">🏭 Custo Fixo</div>
+        <div class="fn-sum-val" style="color:#4f46e5">${fnFmtBig(totalFixed)}</div>
+        <div class="fn-sum-meta">${isAll?'todos os meses':'imputado manualmente'}</div>
+      </div>
+      <div class="fn-sum-card" style="border-left:3px solid #111827">
+        <div class="fn-sum-lbl">Σ Custo Total Interno</div>
+        <div class="fn-sum-val" style="color:#111827">${fnFmtBig(totalFixed + totalVar)}</div>
+        <div class="fn-sum-meta">Fixo + CNC</div>
+      </div>
     `;
   }
 
@@ -14742,6 +14856,9 @@ function fnRender() {
     const rows = FN_PLANTAS.map(planta => {
       const v = byPlant[planta];
       const budget = (budgets[month] && budgets[month][planta]) || 0;
+      let fixedPlant = 0;
+      if (isAll) { Object.keys(fixedObj).forEach(mk => { fixedPlant += (fixedObj[mk] && fixedObj[mk][planta]) || 0; }); }
+      else fixedPlant = (fixedObj[month] && fixedObj[month][planta]) || 0;
       const isExpanded = expandedSet.has(planta);
       const savingPctPlant = v.approved > 0 ? Math.round((v.saving / v.approved) * 100) : 0;
 
@@ -14771,6 +14888,20 @@ function fnRender() {
           <td class="fn-cell-money fn-cell-saving ${v.saving>=0?'pos':'neg'}">${v.saving!==0?(v.saving>0?'+':'')+fnFmt(v.saving):'—'}</td>
           <td class="fn-cell-pct">${v.approved?(savingPctPlant>=0?'+':'')+savingPctPlant+'%':'—'}</td>
           <td class="fn-cell-budget-pct">${budgetStatus}</td>
+          <td class="fn-cell-money" style="border-left:1px solid #eee">${v.varForn?fnFmt(v.varForn):'—'}<div style="font-size:9px;color:#aaa">${v.encCount} enc.</div></td>
+          <td class="fn-cell-money">${v.varCost?fnFmt(v.varCost):'—'}</td>
+          <td class="fn-cell-money" style="font-weight:600;color:${(v.varForn-v.varCost)>=0?'#059669':'#dc2626'}">${(v.varForn||v.varCost)?((v.varForn-v.varCost)>=0?'+':'')+fnFmt(v.varForn-v.varCost):'—'}</td>
+          <td class="fn-cell-money" onclick="event.stopPropagation()">${
+            isAll
+              ? fnFmt(fixedPlant)
+              : `R$ <input class="fn-cu-input" type="text" inputmode="decimal" style="width:90px"
+                   value="${(fixedPlant||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}"
+                   onclick="event.stopPropagation()"
+                   onchange="fnEditFixed('${planta}','${month}', this.value)"
+                   onblur="this.value=(parseFloat(this.value.replace(/\\./g,'').replace(',','.'))||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})"
+                   title="Custo fixo da fábrica neste mês — digite o valor">`
+          }</td>
+          <td class="fn-cell-money" style="font-weight:700;color:#111827">${fnFmt(fixedPlant + v.varCost)}</td>
         </tr>`;
 
       // Linha expandida com tabela detalhada
@@ -14851,7 +14982,7 @@ function fnRender() {
 
       return mainRow + `
         <tr class="fn-row-detail">
-          <td colspan="9">${tableHtml}</td>
+          <td colspan="14">${tableHtml}</td>
         </tr>`;
     }).join('');
 
@@ -14867,6 +14998,11 @@ function fnRender() {
           <th style="text-align:right">${t('fn.tbl.saving')}</th>
           <th style="text-align:center">${t('fn.tbl.pct')}</th>
           <th style="text-align:center">${t('fn.orcamento').replace('⚙ ','').slice(0,6)+'.'}</th>
+          <th style="text-align:right;border-left:1px solid #eee">🏪 Externo (Forn)</th>
+          <th style="text-align:right">⚙ Interno (CNC)</th>
+          <th style="text-align:right">💰 Economia</th>
+          <th style="text-align:right">🏭 Custo Fixo</th>
+          <th style="text-align:right">Σ Total Interno</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>`;
@@ -15622,6 +15758,7 @@ async function fbBootstrap() {
     '/sol_new':      'cnc_sol_new_v1',
     '/sol_deleted':  'cnc_sol_deleted_v1',
     '/budgets':      'cnc_fn_budgets_v1',
+    '/fixed_costs':  'cnc_fn_fixed_v1',
     '/config':       'cnc_os_config_v1'
   };
 
