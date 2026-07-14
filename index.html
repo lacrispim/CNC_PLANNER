@@ -301,6 +301,7 @@ body.view-solicitacoes .tb-filters{display:none;}
   .dash-container{padding:10px 12px 20px}
 }
 body.view-dashboard .tb-filters{display:none;}
+body.view-custos .tb-filters{display:none;}
 /* No modo Fábricas (só SITES), também esconde */
 body.mode-fabricas .tb-filters{display:none;}
 
@@ -2377,6 +2378,7 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
       <button class="tab tab-fabrica" onclick="setView('sites')" title="Acesso da fábrica — gestão de capacidade mensal por site" data-i18n="tab.sites">🏭 SITES</button>
       <button class="tab tab-visao tab-fabrica" onclick="setView('visao')" title="Visão Geral — status de produção por fábrica (Concluídas, Em Produção, Backlog)" data-i18n="tab.visao">📋 VISÃO GERAL</button>
       <button class="tab tab-fabrica" onclick="setView('dashboard')" title="Dashboard — gráficos e indicadores" data-i18n="tab.dashboard">📊 DASHBOARD</button>
+      <button class="tab tab-fabrica" onclick="setView('custos')" title="Custos — realizado por conta (KSB1)">💰 CUSTOS</button>
     </div>
     <!-- Grupo CNC -->
     <div class="tab-group tab-group-cnc">
@@ -2760,6 +2762,24 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
       <div class="dash-card-body" id="dashChartEcoTempo"></div>
     </div>
   </div>
+</div>
+
+<!-- ════════════════════ CUSTOS — Realizado por conta (KSB1) ════════════════════ -->
+<div id="custosView" style="display:none;flex-direction:column;flex:1;overflow:auto;padding:22px 26px;background:#faf9f6">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+    <div>
+      <h2 style="margin:0;font-size:20px;font-weight:700;color:#1a1a1a">💰 Custos — Realizado por conta</h2>
+      <div style="font-size:12.5px;color:#888;margin-top:2px">Importe a <b>PT</b> (planning tool) como base do ano, e o <b>KSB1</b> de cada mês fechado por cima. Dados só neste navegador.</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input type="file" id="custPTInput" accept=".xlsx,.xls,.XLSX,.XLS" style="display:none" onchange="custImportPT(this)">
+      <button onclick="document.getElementById('custPTInput').click()" style="border:none;background:#059669;color:#fff;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer">⬆ Importar PT (plano)</button>
+      <input type="file" id="custFileInput" accept=".xlsx,.xls,.XLSX,.XLS" style="display:none" onchange="custImportKSB1(this)">
+      <button onclick="document.getElementById('custFileInput').click()" style="border:none;background:#1e40af;color:#fff;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer">⬆ Importar KSB1 (mês)</button>
+      <button onclick="custClear()" style="border:1px solid #ddd;background:#fff;color:#b91c1c;border-radius:8px;padding:9px 14px;font-size:13px;cursor:pointer">Limpar</button>
+    </div>
+  </div>
+  <div id="custBody"></div>
 </div>
 
 <div class="dw-container" id="desenhosView" style="display:none">
@@ -5246,7 +5266,7 @@ function setView(v){
   curView=v;
   if(v==='semanal') weekOffset=0;
   // Marca classe view-<v> no body pra CSS contextual (mostra/esconde filtros etc)
-  document.body.classList.remove('view-sites','view-financas','view-visao','view-dashboard','view-solicitacoes','view-semanal','view-mensal','view-desenhos');
+  document.body.classList.remove('view-sites','view-financas','view-visao','view-dashboard','view-solicitacoes','view-semanal','view-mensal','view-desenhos','view-custos');
   document.body.classList.add('view-' + v);
   // Marca "on" no botão correspondente com base no onclick (mais robusto que índice)
   document.querySelectorAll('.tb .tab').forEach(t=>{
@@ -5262,6 +5282,7 @@ function setView(v){
   const fnEl=document.getElementById('financasView');
   const vgEl=document.getElementById('visaoView');
   const dashEl=document.getElementById('dashboardView');
+  const custEl=document.getElementById('custosView');
   // esconde tudo
   mainEl.style.display='none';ctrlEl.style.display='none';
   dwEl.style.display='none';stEl.style.display='none';
@@ -5269,6 +5290,7 @@ function setView(v){
   if(fnEl) fnEl.style.display='none';
   if(vgEl) vgEl.style.display='none';
   if(dashEl) dashEl.style.display='none';
+  if(custEl) custEl.style.display='none';
   if(v==='solicitacoes'){
     if(solEl){ solEl.style.display='flex'; if(window.Sol) Sol.init(); }
   }else{
@@ -5289,6 +5311,8 @@ function setView(v){
       if(vgEl){ vgEl.style.display='block'; vgRender(); }
     }else if(v==='dashboard'){
       if(dashEl){ dashEl.style.display='flex'; if(typeof dashRender==='function') dashRender(); }
+    }else if(v==='custos'){
+      if(custEl){ custEl.style.display='flex'; if(typeof custRender==='function') custRender(); }
     }else{
       // MENSAL/SEMANAL
       if(typeof applyFilters === 'function') applyFilters();
@@ -5296,6 +5320,289 @@ function setView(v){
     }
   }
 }
+
+/* ════════════════ CUSTOS — PT (planning tool) + KSB1 por conta/mês ════════════════
+   Base: PT (matriz conta × mês, JAN–DEZ). Cada KSB1 importado SOBRESCREVE o mês fechado
+   com o realizado detalhado. Marca origem PT (plano) x Real (KSB1). Dados só no navegador. */
+const CUST_KEY = 'cnc_custos_ksb1_v1';
+const _CUST_MESES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+const _CUST_MES_HDR = {jan:1,fev:2,mar:3,abr:4,mai:5,jun:6,jul:7,ago:8,set:9,out:10,nov:11,dez:12};
+function _custBRL(v){ return (v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); }
+function _custBRLc(v){ return (v||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function _custNum(v){
+  if (v == null) return 0;
+  if (typeof v === 'number') return v;
+  let s = String(v).trim().replace(/[R$\s]/g,'');
+  if (s.includes(',') && s.includes('.')) s = s.replace(/\./g,'').replace(',','.');
+  else if (s.includes(',')) s = s.replace(',','.');
+  const n = parseFloat(s); return isNaN(n) ? 0 : n;
+}
+function _custColIdx(headerRow, ...names){
+  const H = (headerRow||[]).map(x => String(x||'').trim().toLowerCase());
+  for (const name of names){
+    const nn = name.toLowerCase();
+    let i = H.findIndex(c => c === nn);
+    if (i < 0) i = H.findIndex(c => c.includes(nn));
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+function _custLoad(){
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(CUST_KEY) || 'null'); } catch(e){}
+  if (!raw) return { pt:null, months:{} };
+  if (raw.list && !raw.months){ // formato bem antigo (payload único)
+    const per = raw.period ? String(parseInt(raw.period,10)||0).padStart(2,'0') : '00';
+    const yr = raw.year || '0000';
+    return { pt:null, months: { [yr+'-'+per]: raw } };
+  }
+  if (!raw.months) raw.months = {};
+  if (raw.pt === undefined) raw.pt = null;
+  return raw;
+}
+function _custSave(store){ localStorage.setItem(CUST_KEY, JSON.stringify(store)); }
+function _custMonthLabel(key){
+  const m = String(key).match(/^(\d{4})-(\d{2})$/);
+  if (!m) return key;
+  return (_CUST_MESES[parseInt(m[2],10)-1]||m[2]) + '/' + m[1].slice(2);
+}
+/* ── Importar PT (planning tool): matriz conta × mês (JAN..DEZ) ── */
+function custImportPT(inputEl){
+  const file = inputEl && inputEl.files && inputEl.files[0];
+  if (!file) return;
+  if (typeof XLSX === 'undefined'){ alert('Biblioteca de Excel não carregou. Recarregue (Ctrl+Shift+R).'); inputEl.value=''; return; }
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const wb = XLSX.read(new Uint8Array(ev.target.result), { type:'array', cellDates:true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:true });
+      let hi = -1;
+      for (let i=0;i<Math.min(rows.length,15);i++){
+        const r=(rows[i]||[]).map(x=>String(x||'').trim().toLowerCase());
+        if (r.some(c=>c.includes('cod. conta')||c.includes('cod conta')||c.includes('cod.conta')) && r.some(c=>c==='jan')){ hi=i; break; }
+      }
+      if (hi<0){ alert('Não reconheci a PT: faltam "Cod. Conta" e os meses (JAN..DEZ). Confirme que é o planning tool.'); return; }
+      const H = rows[hi];
+      const cCod=_custColIdx(H,'cod. conta','cod conta','cod.conta');
+      const cDesc=_custColIdx(H,'desc. conta','desc conta','desc.conta');
+      const cTarefa=_custColIdx(H,'tarefa');
+      const cCeco=_custColIdx(H,'cod. ceco','cod ceco');
+      const cScen=_custColIdx(H,'cenário','cenario');
+      const monthCols={};
+      H.forEach((h,ci)=>{ const k=String(h||'').trim().toLowerCase(); if(_CUST_MES_HDR[k]) monthCols[_CUST_MES_HDR[k]]=ci; });
+      if (cCod<0 || !Object.keys(monthCols).length){ alert('Não achei a coluna de conta ou as colunas de meses na PT.'); return; }
+      let year='';
+      if (cScen>=0){ for(let i=hi+1;i<rows.length;i++){ const m=String(rows[i][cScen]||'').match(/(\d{4})/); if(m){year=m[1];break;} } }
+      if (!year) year=String(new Date().getFullYear());
+      const accounts={}; let ceco='';
+      for (let i=hi+1;i<rows.length;i++){
+        const row=rows[i]||[];
+        const code=String(row[cCod]||'').trim();
+        if(!code) continue;
+        const desc=cDesc>=0?String(row[cDesc]||'').trim():'';
+        const tarefa=cTarefa>=0?String(row[cTarefa]||'').trim():'';
+        if(cCeco>=0 && !ceco){ const cc=String(row[cCeco]||'').trim(); if(cc) ceco=cc; }
+        if(!accounts[code]) accounts[code]={code,desc,tarefa,byMonth:{}};
+        for(const mn in monthCols){ accounts[code].byMonth[mn]=(accounts[code].byMonth[mn]||0)+_custNum(row[monthCols[mn]]); }
+        if(desc && !accounts[code].desc) accounts[code].desc=desc;
+        if(tarefa && !accounts[code].tarefa) accounts[code].tarefa=tarefa;
+      }
+      const store=_custLoad();
+      store.pt={ importedAt:Date.now(), fileName:file.name, year, ceco, accounts };
+      try { _custSave(store); } catch(e){ alert('Não foi possível salvar (dados grandes p/ o navegador).'); return; }
+      custRender();
+      if (typeof toast==='function') toast('✓ Planning tool importado: '+Object.keys(accounts).length+' contas (ano '+year+')','success',4000);
+    } catch(e){ console.error('[custImportPT]',e); alert('Erro ao ler a PT: '+(e.message||e)); }
+    finally { inputEl.value=''; }
+  };
+  reader.onerror=()=>{ alert('Não foi possível ler o arquivo.'); inputEl.value=''; };
+  reader.readAsArrayBuffer(file);
+}
+/* ── Importar KSB1: realizado detalhado de um mês ── */
+function custImportKSB1(inputEl){
+  const file = inputEl && inputEl.files && inputEl.files[0];
+  if (!file) return;
+  if (typeof XLSX === 'undefined'){ alert('Biblioteca de Excel não carregou. Recarregue (Ctrl+Shift+R).'); inputEl.value=''; return; }
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const wb = XLSX.read(new Uint8Array(ev.target.result), { type:'array', cellDates:true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:true });
+      if (!rows.length){ alert('Planilha vazia.'); return; }
+      let hi=0;
+      for (let i=0;i<Math.min(rows.length,15);i++){
+        const r=(rows[i]||[]).map(x=>String(x||'').trim().toLowerCase());
+        if (r.some(c=>c.includes('elemento de custo')) && r.some(c=>c.includes('valor'))){ hi=i; break; }
+      }
+      const H = rows[hi] || [];
+      const cAcc=_custColIdx(H,'elemento de custo','cost element');
+      const cDesc=_custColIdx(H,'descr.classe custo','descr.classe','denom.classe custo','cost element name');
+      const cVal=_custColIdx(H,'valor/mr','valor','amount');
+      const cPer=_custColIdx(H,'período','periodo','period');
+      const cAno=_custColIdx(H,'exercício','exercicio','year');
+      const cCeco=_custColIdx(H,'centro custo','cost center');
+      if (cAcc<0 || cVal<0){ alert('Não encontrei "Elemento de Custo" e/ou "Valor/MR". Confirme que é um export do KSB1.'); return; }
+      const acc={}; let total=0,nrows=0; const periods={},cecos={};
+      for (let i=hi+1;i<rows.length;i++){
+        const row=rows[i]||[]; const codeRaw=row[cAcc];
+        if(codeRaw==null||String(codeRaw).trim()==='') continue;
+        const code=String(codeRaw).trim(); const val=_custNum(row[cVal]);
+        const desc=cDesc>=0?String(row[cDesc]||'').trim():'';
+        if(!acc[code]) acc[code]={code,desc,val:0,n:0};
+        acc[code].val+=val; acc[code].n+=1; if(desc&&!acc[code].desc)acc[code].desc=desc;
+        total+=val; nrows++;
+        if(cPer>=0){const p=String(row[cPer]||'').trim(); if(p)periods[p]=(periods[p]||0)+1;}
+        if(cCeco>=0){const cc=String(row[cCeco]||'').trim(); if(cc)cecos[cc]=(cecos[cc]||0)+1;}
+      }
+      if(!nrows){ alert('Nenhum lançamento encontrado no arquivo.'); return; }
+      const per=Object.keys(periods).sort((a,b)=>periods[b]-periods[a])[0]||'';
+      let ano=''; if(cAno>=0){for(let i=hi+1;i<rows.length;i++){const a=String(rows[i][cAno]||'').trim(); if(a){ano=a;break;}}}
+      const ceco=Object.keys(cecos).sort((a,b)=>cecos[b]-cecos[a])[0]||'';
+      const list=Object.values(acc).sort((a,b)=>Math.abs(b.val)-Math.abs(a.val));
+      const perNum=per?String(parseInt(per,10)||0).padStart(2,'0'):'00';
+      const yr=ano||'0000'; const key=yr+'-'+perNum;
+      const store=_custLoad(); const isReplace=!!store.months[key];
+      store.months[key]={ importedAt:Date.now(), fileName:file.name, period:per, year:ano, ceco, total, nrows, list };
+      try { _custSave(store); } catch(e){ alert('Não foi possível salvar (dados grandes). Remova um mês antigo.'); return; }
+      custRender();
+      if (typeof toast==='function') toast('✓ '+_custMonthLabel(key)+(isReplace?' (substituído)':'')+' (KSB1): '+list.length+' contas, '+nrows+' lançamentos','success',4000);
+    } catch(e){ console.error('[custImportKSB1]',e); alert('Erro ao ler o arquivo: '+(e.message||e)); }
+    finally { inputEl.value=''; }
+  };
+  reader.onerror=()=>{ alert('Não foi possível ler o arquivo.'); inputEl.value=''; };
+  reader.readAsArrayBuffer(file);
+}
+function custRemoveMonth(key){
+  if(!confirm('Remover o KSB1 de '+_custMonthLabel(key)+'? (o mês volta a usar o valor da PT)')) return;
+  const store=_custLoad(); delete store.months[key]; _custSave(store); custRender();
+}
+function custRemovePT(){
+  if(!confirm('Remover a PT (planning tool)? Os meses sem KSB1 ficarão vazios.')) return;
+  const store=_custLoad(); store.pt=null; _custSave(store); custRender();
+}
+function custClear(){
+  if(!confirm('Limpar TODOS os custos importados (PT + KSB1) deste navegador?')) return;
+  try { localStorage.removeItem(CUST_KEY); } catch(e){}
+  custRender();
+}
+function custRender(){
+  const el=document.getElementById('custBody'); if(!el) return;
+  const store=_custLoad(); const pt=store.pt; const months=store.months||{};
+  const ksbKeys=Object.keys(months).sort();
+  if(!pt && !ksbKeys.length){
+    el.innerHTML='<div style="border:1px dashed #ddd;border-radius:12px;background:#fff;color:#999;font-size:14px;text-align:center;padding:48px 24px">Nenhum dado ainda.<br>Comece importando a <b>PT (plano)</b> — a base do ano. Depois importe o <b>KSB1</b> de cada mês fechado por cima.</div>';
+    return;
+  }
+  const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const year = pt ? pt.year : (ksbKeys[0]||'0000').slice(0,4);
+  const availMonths = pt ? [1,2,3,4,5,6,7,8,9,10,11,12] : ksbKeys.map(k=>parseInt(k.slice(5,7),10)).sort((a,b)=>a-b);
+  const sel = Array.isArray(store.sel) ? store.sel.filter(m=>availMonths.includes(m)) : null;
+  const monthNums = (sel && sel.length) ? availMonths.filter(m=>sel.includes(m)) : availMonths;
+  // KSB1 por mês (só do ano de exibição)
+  const ksbByMonth={}, ksbHas={};
+  ksbKeys.forEach(k=>{
+    const y=k.slice(0,4), mm=parseInt(k.slice(5,7),10);
+    if(pt && y!==year) return;
+    ksbHas[mm]=true; const map={};
+    (months[k].list||[]).forEach(a=>{ map[a.code]=(map[a.code]||0)+a.val; });
+    ksbByMonth[mm]=map;
+  });
+  // união de contas (PT + KSB1)
+  const accMap={};
+  if(pt) Object.values(pt.accounts).forEach(a=>{ accMap[a.code]={code:a.code,desc:a.desc,tarefa:a.tarefa,cells:{},total:0}; });
+  monthNums.forEach(mn=>{ const map=ksbByMonth[mn]; if(map) Object.keys(map).forEach(code=>{ if(!accMap[code]) accMap[code]={code,desc:'',tarefa:'',cells:{},total:0}; }); });
+  const monthTotals={}; let grand=0;
+  Object.values(accMap).forEach(a=>{
+    monthNums.forEach(mn=>{
+      let val=null, origin=null;
+      if(ksbHas[mn]){ const map=ksbByMonth[mn]||{}; origin='real';
+        val = (a.code in map) ? map[a.code] : (pt && pt.accounts[a.code] ? 0 : null);
+      } else if(pt && pt.accounts[a.code] && (mn in pt.accounts[a.code].byMonth)){
+        val = pt.accounts[a.code].byMonth[mn]; origin='pt';
+      }
+      if(val!==null){ a.cells[mn]={val,origin}; a.total+=val; monthTotals[mn]=(monthTotals[mn]||0)+val; grand+=val; }
+    });
+  });
+  const accList=Object.values(accMap).sort((a,b)=>Math.abs(b.total)-Math.abs(a.total));
+  let html='';
+  // Cartões
+  html+='<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px">';
+  html+='<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:3px solid #059669;border-radius:10px;padding:12px 14px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">Base (PT)</div><div style="font-size:18px;font-weight:700;color:#059669">'+(pt?('Ano '+esc(year)):'—')+'</div><div style="font-size:11px;color:#aaa">'+(pt?(Object.keys(pt.accounts).length+' contas · '+esc(pt.fileName||'')):'importe a PT')+'</div></div>';
+  html+='<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:3px solid #1e40af;border-radius:10px;padding:12px 14px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">Meses fechados (KSB1)</div><div style="font-size:18px;font-weight:700;color:#1e40af">'+Object.keys(ksbHas).length+'</div><div style="font-size:11px;color:#aaa">'+Object.keys(ksbHas).map(m=>_CUST_MESES[m-1]).join(', ')+'</div></div>';
+  html+='<div style="flex:1;min-width:150px;background:#fff;border:1px solid #eee;border-left:3px solid #6b7280;border-radius:10px;padding:12px 14px"><div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.4px">Total (ano)</div><div style="font-size:18px;font-weight:700;color:'+(grand>=0?'#059669':'#b91c1c')+'">'+_custBRL(grand)+'</div><div style="font-size:11px;color:#aaa">'+accList.length+' contas</div></div>';
+  html+='</div>';
+  // Legenda + chips
+  html+='<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:#666">';
+  html+='<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:#ecfdf5;border:1px solid #a7f3d0"></span>PT (plano)</span>';
+  html+='<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:#eff6ff;border:1px solid #bfdbfe"></span>Real (KSB1)</span>';
+  if(pt) html+='<button onclick="custRemovePT()" style="border:1px solid #eee;background:#fff;color:#b91c1c;border-radius:16px;padding:3px 10px;font-size:11px;cursor:pointer">remover PT</button>';
+  html+='</div>';
+  if(ksbKeys.length){
+    html+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">';
+    ksbKeys.forEach(k=>{ html+='<span style="display:inline-flex;align-items:center;gap:6px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:20px;padding:4px 6px 4px 12px;font-size:12px"><b style="color:#1e40af">'+esc(_custMonthLabel(k))+'</b><span style="color:#666">'+_custBRL(months[k].total)+'</span><button title="Remover" onclick="custRemoveMonth(\''+k+'\')" style="border:none;background:#dbeafe;color:#1e40af;border-radius:50%;width:19px;height:19px;cursor:pointer;line-height:1">×</button></span>'; });
+    html+='</div>';
+  }
+  // Filtro de meses
+  html+='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px">';
+  html+='<span style="font-size:12px;color:#888;margin-right:2px">Meses:</span>';
+  availMonths.forEach(mn=>{ const on=monthNums.includes(mn); html+='<button onclick="custToggleMonth('+mn+')" style="border:1px solid '+(on?'#1e40af':'#ddd')+';background:'+(on?'#1e40af':'#fff')+';color:'+(on?'#fff':'#999')+';border-radius:14px;padding:3px 10px;font-size:11.5px;cursor:pointer">'+_CUST_MESES[mn-1]+(ksbHas[mn]?' •':'')+'</button>'; });
+  html+='<button onclick="custMonthsAll()" style="border:1px solid #eee;background:#f7f7f4;color:#555;border-radius:14px;padding:3px 10px;font-size:11.5px;cursor:pointer;margin-left:4px">Todos</button>';
+  if(Object.keys(ksbHas).length) html+='<button onclick="custMonthsClosed()" style="border:1px solid #bfdbfe;background:#eff6ff;color:#1e40af;border-radius:14px;padding:3px 10px;font-size:11.5px;cursor:pointer">Só fechados</button>';
+  html+='</div>';
+  // Matriz
+  html+='<div style="background:#fff;border:1px solid #eee;border-radius:10px;overflow:auto">';
+  html+='<table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">';
+  html+='<thead><tr style="background:#f5f5ef;color:#555">'
+    +'<th style="text-align:left;padding:8px 10px;font-weight:600;position:sticky;left:0;background:#f5f5ef">Conta</th>'
+    +'<th style="text-align:left;padding:8px 10px;font-weight:600">Descrição</th>';
+  monthNums.forEach(mn=>{ const real=ksbHas[mn]; html+='<th style="text-align:right;padding:8px 8px;font-weight:600;'+(real?'color:#1e40af':'')+'">'+_CUST_MESES[mn-1]+(real?' •':'')+'</th>'; });
+  html+='<th style="text-align:right;padding:8px 10px;font-weight:700;border-left:2px solid #e5e5e0">Total</th></tr></thead><tbody>';
+  accList.forEach(a=>{
+    const isCnc=a.code==='41702200';
+    html+='<tr style="border-top:1px solid #f0f0eb">'
+      +'<td style="padding:6px 10px;font-family:monospace;font-weight:600;position:sticky;left:0;background:#fff">'+esc(a.code)+(isCnc?' <span style="font-family:sans-serif;font-size:8px;background:#1e40af;color:#fff;border-radius:4px;padding:1px 4px">CNC</span>':'')+'</td>'
+      +'<td style="padding:6px 10px;color:#444;max-width:230px;overflow:hidden;text-overflow:ellipsis">'+esc(a.desc||'—')+'</td>';
+    monthNums.forEach(mn=>{
+      const c=a.cells[mn];
+      if(!c){ html+='<td style="padding:6px 8px;text-align:right;color:#ccc">—</td>'; }
+      else { const bg=c.origin==='real'?'#eff6ff':'#ecfdf5'; html+='<td style="padding:6px 8px;text-align:right;background:'+bg+';color:'+(c.val>=0?'#111827':'#b91c1c')+'">'+_custBRLc(c.val)+'</td>'; }
+    });
+    html+='<td style="padding:6px 10px;text-align:right;font-weight:700;border-left:2px solid #e5e5e0;color:'+(a.total>=0?'#111827':'#b91c1c')+'">'+_custBRLc(a.total)+'</td></tr>';
+  });
+  html+='</tbody><tfoot><tr style="border-top:2px solid #e5e5e0;background:#faf9f6;font-weight:700">'
+    +'<td style="padding:9px 10px;position:sticky;left:0;background:#faf9f6">TOTAL</td><td></td>';
+  monthNums.forEach(mn=>{ const t=monthTotals[mn]; html+='<td style="padding:9px 8px;text-align:right;color:'+((t||0)>=0?'#059669':'#b91c1c')+'">'+(t!=null?_custBRLc(t):'—')+'</td>'; });
+  html+='<td style="padding:9px 10px;text-align:right;border-left:2px solid #e5e5e0;color:'+(grand>=0?'#059669':'#b91c1c')+'">'+_custBRLc(grand)+'</td></tr></tfoot>';
+  html+='</table></div>';
+  html+='<div style="font-size:11px;color:#aaa;margin-top:10px">Meses com • são fechados via KSB1 (realizado). Os demais vêm da PT (plano). Reimportar substitui. Dados só neste navegador.</div>';
+  el.innerHTML=html;
+}
+function custToggleMonth(mn){
+  const store=_custLoad(); const pt=store.pt; const months=store.months||{};
+  const avail = pt ? [1,2,3,4,5,6,7,8,9,10,11,12] : Object.keys(months).map(k=>parseInt(k.slice(5,7),10)).sort((a,b)=>a-b);
+  let sel = (Array.isArray(store.sel) && store.sel.length) ? store.sel.slice() : avail.slice();
+  if(sel.includes(mn)) sel = sel.filter(m=>m!==mn); else sel.push(mn);
+  if(!sel.length) sel = avail.slice();
+  store.sel = (sel.length===avail.length) ? null : sel.sort((a,b)=>a-b);
+  _custSave(store); custRender();
+}
+function custMonthsAll(){ const store=_custLoad(); store.sel=null; _custSave(store); custRender(); }
+function custMonthsClosed(){
+  const store=_custLoad();
+  const closed = Object.keys(store.months||{}).map(k=>parseInt(k.slice(5,7),10)).sort((a,b)=>a-b);
+  store.sel = closed.length ? closed : null; _custSave(store); custRender();
+}
+window.custImportPT = custImportPT;
+window.custToggleMonth = custToggleMonth;
+window.custMonthsAll = custMonthsAll;
+window.custMonthsClosed = custMonthsClosed;
+window.custImportKSB1 = custImportKSB1;
+window.custClear = custClear;
+window.custRemoveMonth = custRemoveMonth;
+window.custRemovePT = custRemovePT;
+window.custRender = custRender;
 function prevMonth(){if(curView==='semanal'){weekOffset--;render();}else{curM--;if(curM<0){curM=11;curY--;}render();}}
 function nextMonth(){if(curView==='semanal'){weekOffset++;render();}else{curM++;if(curM>11){curM=0;curY++;}render();}}
 let _resetPending=false;
@@ -13952,6 +14259,9 @@ function saveN() {
     const newRecs = _loadNewRecs();
     newRecs.unshift(rec);
     _saveNewRecs(newRecs);
+    // Durabilidade imediata: além do save debounced (1200ms), empurra JÁ pro Firebase
+    // pra a requisição sobreviver mesmo se o navegador recarregar antes do debounce.
+    try { if (typeof FB !== 'undefined' && FB.save) FB.save('/sol_new', newRecs); } catch(_){}
   } catch(e) { console.warn('[saveN] persist new rec falhou:', e); }
   _persistRec(rec);
 
@@ -14471,6 +14781,9 @@ function _formsInboxProcess(key, v) {
         const newRecs = _loadNewRecs();
         newRecs.unshift(rec);
         _saveNewRecs(newRecs);
+        // Durabilidade imediata: empurra JÁ pro Firebase (não só o debounced),
+        // pra cada resposta importada sobreviver mesmo em rajada/recarga.
+        try { if (typeof FB !== 'undefined' && FB.save) FB.save('/sol_new', newRecs); } catch(_){}
       } catch(e) { console.warn('[formsInbox] persist local falhou:', e); }
       _persistRec(rec);
       // Limpa a caixa de entrada (o claim fica 1 min pra bloquear retardatários)
@@ -15878,6 +16191,30 @@ async function fbBootstrap() {
         }
         origSet.call(localStorage, lsKey, JSON.stringify(merged));
         console.log(`[FB] Listener /sol_mods MERGE: ${applied} aplicados, ${kept} locais preservados (mais recentes)`);
+      } else if (fbPath === '/sol_new' && val) {
+        // MERGE para /sol_new: união por id, preservando as CRIAÇÕES LOCAIS que ainda
+        // não subiram ao Firebase (evita que um eco antigo apague requisições novas).
+        const toList = v => Array.isArray(v) ? v.filter(Boolean)
+                          : (v && typeof v === 'object' ? Object.values(v) : []);
+        const serverList = toList(val);
+        let localList = [];
+        try { localList = toList(JSON.parse(localStorage.getItem(lsKey) || '[]')); } catch {}
+        const deleted = (typeof _loadDeletedIds === 'function')
+          ? new Set(_loadDeletedIds().map(String)) : new Set();
+        const byId = new Map();
+        serverList.forEach(r => { if (r && r.id != null && !deleted.has(String(r.id))) byId.set(String(r.id), r); });
+        let keptLocal = 0;
+        localList.forEach(r => {
+          if (!r || r.id == null) return;
+          const k = String(r.id);
+          if (deleted.has(k)) return;
+          const s = byId.get(k);
+          if (!s) { byId.set(k, r); keptLocal++; }                       // criação local ainda não sincronizada
+          else if (r._drawing && !s._drawing) { byId.set(k, r); }        // preserva desenho local
+        });
+        const merged = Array.from(byId.values());
+        origSet.call(localStorage, lsKey, JSON.stringify(merged));
+        console.log(`[FB] Listener /sol_new MERGE: servidor ${serverList.length} + local ${localList.length} → ${merged.length} (${keptLocal} locais preservados)`);
       } else if (val === null || val === undefined) {
         // Servidor está vazio — limpa local também
         origSet.call(localStorage, lsKey, JSON.stringify(fbPath === '/sol_mods' || fbPath === '/config' ? {} : []));
