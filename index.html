@@ -5446,30 +5446,44 @@ function custImportKSB1(inputEl){
       const cAno=_custColIdx(H,'exercício','exercicio','year');
       const cCeco=_custColIdx(H,'centro custo','cost center');
       if (cAcc<0 || cVal<0){ alert('Não encontrei "Elemento de Custo" e/ou "Valor/MR". Confirme que é um export do KSB1.'); return; }
-      const acc={}; let total=0,nrows=0; const periods={},cecos={};
+      // Ano padrão (1º valor não vazio da coluna Exercício)
+      let fallbackYear='';
+      if(cAno>=0){ for(let i=hi+1;i<rows.length;i++){ const a=String(rows[i][cAno]||'').trim(); if(a){ fallbackYear=a; break; } } }
+      if(!fallbackYear) fallbackYear=String(new Date().getFullYear());
+      // Agrupa LINHA A LINHA pelo período de cada lançamento → cada mês no seu balde.
+      const buckets={}; let nrowsTot=0, noPer=0;
       for (let i=hi+1;i<rows.length;i++){
         const row=rows[i]||[]; const codeRaw=row[cAcc];
         if(codeRaw==null||String(codeRaw).trim()==='') continue;
         const code=String(codeRaw).trim(); const val=_custNum(row[cVal]);
         const desc=cDesc>=0?String(row[cDesc]||'').trim():'';
-        if(!acc[code]) acc[code]={code,desc,val:0,n:0};
-        acc[code].val+=val; acc[code].n+=1; if(desc&&!acc[code].desc)acc[code].desc=desc;
-        total+=val; nrows++;
-        if(cPer>=0){const p=String(row[cPer]||'').trim(); if(p)periods[p]=(periods[p]||0)+1;}
-        if(cCeco>=0){const cc=String(row[cCeco]||'').trim(); if(cc)cecos[cc]=(cecos[cc]||0)+1;}
+        let pm = cPer>=0 ? parseInt(String(row[cPer]||'').trim(),10) : NaN;
+        if(!(pm>=1 && pm<=12)){ pm=0; noPer++; }
+        const yr = (cAno>=0 && String(row[cAno]||'').trim()) ? String(row[cAno]).trim() : fallbackYear;
+        const key = yr+'-'+String(pm).padStart(2,'0');
+        if(!buckets[key]) buckets[key]={ acc:{}, total:0, nrows:0, cecos:{}, period:String(pm), year:yr };
+        const B=buckets[key];
+        if(!B.acc[code]) B.acc[code]={code,desc,val:0,n:0};
+        B.acc[code].val+=val; B.acc[code].n+=1; if(desc&&!B.acc[code].desc)B.acc[code].desc=desc;
+        B.total+=val; B.nrows++; nrowsTot++;
+        if(cCeco>=0){ const cc=String(row[cCeco]||'').trim(); if(cc) B.cecos[cc]=(B.cecos[cc]||0)+1; }
       }
-      if(!nrows){ alert('Nenhum lançamento encontrado no arquivo.'); return; }
-      const per=Object.keys(periods).sort((a,b)=>periods[b]-periods[a])[0]||'';
-      let ano=''; if(cAno>=0){for(let i=hi+1;i<rows.length;i++){const a=String(rows[i][cAno]||'').trim(); if(a){ano=a;break;}}}
-      const ceco=Object.keys(cecos).sort((a,b)=>cecos[b]-cecos[a])[0]||'';
-      const list=Object.values(acc).sort((a,b)=>Math.abs(b.val)-Math.abs(a.val));
-      const perNum=per?String(parseInt(per,10)||0).padStart(2,'0'):'00';
-      const yr=ano||'0000'; const key=yr+'-'+perNum;
-      const store=_custLoad(); const isReplace=!!store.months[key];
-      store.months[key]={ importedAt:Date.now(), fileName:file.name, period:per, year:ano, ceco, total, nrows, list };
+      if(!nrowsTot){ alert('Nenhum lançamento encontrado no arquivo.'); return; }
+      const store=_custLoad();
+      const keysImported=[];
+      Object.keys(buckets).forEach(key=>{
+        const B=buckets[key];
+        const list=Object.values(B.acc).sort((a,b)=>Math.abs(b.val)-Math.abs(a.val));
+        const ceco=Object.keys(B.cecos).sort((a,b)=>B.cecos[b]-B.cecos[a])[0]||'';
+        store.months[key]={ importedAt:Date.now(), fileName:file.name, period:B.period, year:B.year, ceco, total:B.total, nrows:B.nrows, list };
+        keysImported.push(key);
+      });
       try { _custSave(store); } catch(e){ alert('Não foi possível salvar (dados grandes). Remova um mês antigo.'); return; }
       custRender();
-      if (typeof toast==='function') toast('✓ '+_custMonthLabel(key)+(isReplace?' (substituído)':'')+' (KSB1): '+list.length+' contas, '+nrows+' lançamentos','success',4000);
+      keysImported.sort();
+      const resumo = keysImported.map(k=>_custMonthLabel(k)+' ('+_custBRL(store.months[k].total)+')').join(' · ');
+      if(noPer) console.warn('[KSB1] '+noPer+' lançamento(s) sem período válido foram agrupados à parte.');
+      if (typeof toast==='function') toast('✓ KSB1: '+keysImported.length+' mês(es) importado(s) — '+resumo, 'success', 6000);
     } catch(e){ console.error('[custImportKSB1]',e); alert('Erro ao ler o arquivo: '+(e.message||e)); }
     finally { inputEl.value=''; }
   };
@@ -5548,7 +5562,7 @@ function custRender(){
   html+='</div>';
   if(ksbKeys.length){
     html+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">';
-    ksbKeys.forEach(k=>{ html+='<span style="display:inline-flex;align-items:center;gap:6px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:20px;padding:4px 6px 4px 12px;font-size:12px"><b style="color:#1e40af">'+esc(_custMonthLabel(k))+'</b><span style="color:#666">'+_custBRL(months[k].total)+'</span><button title="Remover" onclick="custRemoveMonth(\''+k+'\')" style="border:none;background:#dbeafe;color:#1e40af;border-radius:50%;width:19px;height:19px;cursor:pointer;line-height:1">×</button></span>'; });
+    ksbKeys.forEach(k=>{ html+='<span style="display:inline-flex;align-items:center;gap:6px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:20px;padding:4px 6px 4px 12px;font-size:12px"><b style="color:#1e40af">'+esc(_custMonthLabel(k))+'</b><span style="color:#666">'+_custBRL(_custSpend(months[k]))+'</span><button title="Remover" onclick="custRemoveMonth(\''+k+'\')" style="border:none;background:#dbeafe;color:#1e40af;border-radius:50%;width:19px;height:19px;cursor:pointer;line-height:1">×</button></span>'; });
     html+='</div>';
   }
   // Filtro de meses
@@ -5560,32 +5574,38 @@ function custRender(){
   html+='</div>';
   // Modo GRÁFICO: Budget (PT) × Gasto (KSB1) por mês
   if(mode==='grafico'){ html += _custChartBlock(monthNums, ksbByMonth, ksbHas, pt); el.innerHTML=html; return; }
-  // Matriz
-  html+='<div style="background:#fff;border:1px solid #eee;border-radius:10px;overflow:auto">';
-  html+='<table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">';
-  html+='<thead><tr style="background:#f5f5ef;color:#555">'
-    +'<th style="text-align:left;padding:8px 10px;font-weight:600;position:sticky;left:0;background:#f5f5ef">Conta</th>'
-    +'<th style="text-align:left;padding:8px 10px;font-weight:600">Descrição</th>';
-  monthNums.forEach(mn=>{ const real=ksbHas[mn]; html+='<th style="text-align:right;padding:8px 8px;font-weight:600;'+(real?'color:#1e40af':'')+'">'+_CUST_MESES[mn-1]+(real?' •':'')+'</th>'; });
-  html+='<th style="text-align:right;padding:8px 10px;font-weight:700;border-left:2px solid #e5e5e0">Total</th></tr></thead><tbody>';
-  accList.forEach(a=>{
-    const isCnc=a.code==='41702200';
-    html+='<tr style="border-top:1px solid #f0f0eb">'
-      +'<td style="padding:6px 10px;font-family:monospace;font-weight:600;position:sticky;left:0;background:#fff">'+esc(a.code)+(isCnc?' <span style="font-family:sans-serif;font-size:8px;background:#1e40af;color:#fff;border-radius:4px;padding:1px 4px">CNC</span>':'')+'</td>'
-      +'<td style="padding:6px 10px;color:#444;max-width:230px;overflow:hidden;text-overflow:ellipsis">'+esc(a.desc||'—')+'</td>';
-    monthNums.forEach(mn=>{
-      const c=a.cells[mn];
-      if(!c){ html+='<td style="padding:6px 8px;text-align:right;color:#ccc">—</td>'; }
-      else { const bg=c.origin==='real'?'#eff6ff':'#ecfdf5'; html+='<td style="padding:6px 8px;text-align:right;background:'+bg+';color:'+(c.val>=0?'#111827':'#b91c1c')+'">'+_custBRLc(c.val)+'</td>'; }
+  // Sub-toggle: Planning Tool (plano) | Real (KSB1)
+  const tab = store.tab==='real' ? 'real' : 'pt';
+  html+='<div style="display:inline-flex;background:#eee;border-radius:9px;padding:3px;margin-bottom:12px">';
+  html+='<button onclick="custSetTab(\'pt\')" style="border:none;border-radius:7px;padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer;background:'+(tab==='pt'?'#fff':'transparent')+';color:'+(tab==='pt'?'#059669':'#777')+';box-shadow:'+(tab==='pt'?'0 1px 2px rgba(0,0,0,.08)':'none')+'">Planning Tool (plano)</button>';
+  html+='<button onclick="custSetTab(\'real\')" style="border:none;border-radius:7px;padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer;background:'+(tab==='real'?'#fff':'transparent')+';color:'+(tab==='real'?'#1e40af':'#777')+';box-shadow:'+(tab==='real'?'0 1px 2px rgba(0,0,0,.08)':'none')+'">Real (KSB1)</button>';
+  html+='</div>';
+  if(tab==='pt'){
+    if(!pt){
+      html+='<div style="border:1px dashed #a7f3d0;border-radius:12px;background:#f0fdf4;color:#059669;font-size:13.5px;text-align:center;padding:40px 24px">Planning tool ainda não importado.<br>Clique em <b>⬆ Importar PT (plano)</b>.</div>';
+      el.innerHTML=html; return;
+    }
+    const rows=Object.values(pt.accounts).map(a=>({code:a.code,desc:a.desc,byMonth:a.byMonth}));
+    html+=_custTableHTML(rows, monthNums, '#ecfdf5', ksbHas, false);
+    html+='<div style="font-size:11px;color:#aaa;margin-top:10px">Planning tool (plano) — ano '+esc(year)+', aba "Planilha1". Valores em R$. Segue o filtro de meses.</div>';
+  } else {
+    const realMonths = monthNums.filter(mn=>ksbHas[mn]);
+    if(!realMonths.length){
+      html+='<div style="border:1px dashed #bfdbfe;border-radius:12px;background:#eff6ff;color:#1e40af;font-size:13.5px;text-align:center;padding:40px 24px">Nenhum KSB1 importado'+(Object.keys(ksbHas).length?' nos meses selecionados':'')+'.<br>Clique em <b>⬆ Importar KSB1 (mês)</b>'+(Object.keys(ksbHas).length?' ou ajuste o filtro de meses':'')+'.</div>';
+      el.innerHTML=html; return;
+    }
+    const descMap={};
+    ksbKeys.forEach(k=>{ (months[k].list||[]).forEach(a=>{ if(a.desc && !descMap[a.code]) descMap[a.code]=a.desc; }); });
+    const codes={};
+    realMonths.forEach(mn=>{ const map=ksbByMonth[mn]||{}; Object.keys(map).forEach(c=>{ codes[c]=1; }); });
+    const rows=Object.keys(codes).map(c=>{
+      const byMonth={};
+      realMonths.forEach(mn=>{ const map=ksbByMonth[mn]||{}; if(c in map) byMonth[mn]=map[c]; });
+      return { code:c, desc:descMap[c]||'', byMonth };
     });
-    html+='<td style="padding:6px 10px;text-align:right;font-weight:700;border-left:2px solid #e5e5e0;color:'+(a.total>=0?'#111827':'#b91c1c')+'">'+_custBRLc(a.total)+'</td></tr>';
-  });
-  html+='</tbody><tfoot><tr style="border-top:2px solid #e5e5e0;background:#faf9f6;font-weight:700">'
-    +'<td style="padding:9px 10px;position:sticky;left:0;background:#faf9f6">TOTAL</td><td></td>';
-  monthNums.forEach(mn=>{ const t=monthTotals[mn]; html+='<td style="padding:9px 8px;text-align:right;color:'+((t||0)>=0?'#059669':'#b91c1c')+'">'+(t!=null?_custBRLc(t):'—')+'</td>'; });
-  html+='<td style="padding:9px 10px;text-align:right;border-left:2px solid #e5e5e0;color:'+(grand>=0?'#059669':'#b91c1c')+'">'+_custBRLc(grand)+'</td></tr></tfoot>';
-  html+='</table></div>';
-  html+='<div style="font-size:11px;color:#aaa;margin-top:10px">Meses com • são fechados via KSB1 (realizado). Os demais vêm da PT (plano). Reimportar substitui. Dados só neste navegador.</div>';
+    html+=_custTableHTML(rows, realMonths, '#eff6ff', ksbHas, true);
+    html+='<div style="font-size:11px;color:#aaa;margin-top:10px">Real (KSB1) — só os meses importados. <b>TOTAL</b> = soma líquida; <b>GASTO</b> = soma dos positivos quando o mês fecha em zero (senão, soma normal).</div>';
+  }
   el.innerHTML=html;
 }
 function custToggleMonth(mn){
@@ -5609,11 +5629,65 @@ function _custK(v){
   if(a>=1000) return (v/1000).toLocaleString('pt-BR',{maximumFractionDigits:1})+'k';
   return v.toLocaleString('pt-BR',{maximumFractionDigits:0});
 }
+function _custGastoVals(vals){
+  // Mês FECHADO = a soma dá ZERO (a cobertura anulou os custos) → gasto = soma dos positivos.
+  // Mês ABERTO (soma diferente de zero) → soma normal (líquida, positivos + negativos).
+  let pos=0, neg=0;
+  (vals||[]).forEach(v=>{ v=v||0; if(v>0) pos+=v; else neg+=v; });
+  const net = pos+neg;
+  const fechado = pos>0 && Math.abs(net) < 0.01; // tolerância de 1 centavo (arredondamento)
+  return { val: fechado ? pos : net, fechado };
+}
+function _custSpend(md){ return _custGastoVals((md && md.list ? md.list : []).map(a=>a.val||0)).val; }
+function _custTableHTML(rows, cols, tint, ksbHas, showGasto){
+  const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const colTot={}; let grand=0;
+  rows.forEach(r=>{ r._t=0; cols.forEach(mn=>{ const v=r.byMonth[mn]; if(v!=null){ r._t+=v; colTot[mn]=(colTot[mn]||0)+v; grand+=v; } }); });
+  const list=rows.slice().sort((a,b)=>Math.abs(b._t)-Math.abs(a._t));
+  let h='<div style="background:#fff;border:1px solid #eee;border-radius:10px;overflow:auto">';
+  h+='<table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">';
+  h+='<thead><tr style="background:#f5f5ef;color:#555">'
+    +'<th style="text-align:left;padding:8px 10px;font-weight:600;position:sticky;left:0;background:#f5f5ef">Conta</th>'
+    +'<th style="text-align:left;padding:8px 10px;font-weight:600">Descrição</th>';
+  cols.forEach(mn=>{ const real=ksbHas&&ksbHas[mn]; h+='<th style="text-align:right;padding:8px 8px;font-weight:600;'+(real?'color:#1e40af':'')+'">'+_CUST_MESES[mn-1]+(real?' •':'')+'</th>'; });
+  h+='<th style="text-align:right;padding:8px 10px;font-weight:700;border-left:2px solid #e5e5e0">Total</th></tr></thead><tbody>';
+  list.forEach(a=>{
+    const isCnc=a.code==='41702200';
+    h+='<tr style="border-top:1px solid #f0f0eb">'
+      +'<td style="padding:6px 10px;font-family:monospace;font-weight:600;position:sticky;left:0;background:#fff">'+esc(a.code)+(isCnc?' <span style="font-family:sans-serif;font-size:8px;background:#1e40af;color:#fff;border-radius:4px;padding:1px 4px">CNC</span>':'')+'</td>'
+      +'<td style="padding:6px 10px;color:#444;max-width:230px;overflow:hidden;text-overflow:ellipsis">'+esc(a.desc||'—')+'</td>';
+    cols.forEach(mn=>{
+      const v=a.byMonth[mn];
+      if(v==null){ h+='<td style="padding:6px 8px;text-align:right;color:#ccc">—</td>'; }
+      else h+='<td style="padding:6px 8px;text-align:right;background:'+tint+';color:'+(v>=0?'#111827':'#b91c1c')+'">'+_custBRLc(v)+'</td>';
+    });
+    h+='<td style="padding:6px 10px;text-align:right;font-weight:700;border-left:2px solid #e5e5e0;color:'+(a._t>=0?'#111827':'#b91c1c')+'">'+_custBRLc(a._t)+'</td></tr>';
+  });
+  h+='</tbody><tfoot><tr style="border-top:2px solid #e5e5e0;background:#faf9f6;font-weight:700">'
+    +'<td style="padding:9px 10px;position:sticky;left:0;background:#faf9f6">TOTAL</td><td></td>';
+  cols.forEach(mn=>{ const t=colTot[mn]; h+='<td style="padding:9px 8px;text-align:right;color:'+((t||0)>=0?'#059669':'#b91c1c')+'">'+(t!=null?_custBRLc(t):'—')+'</td>'; });
+  h+='<td style="padding:9px 10px;text-align:right;border-left:2px solid #e5e5e0;color:'+(grand>=0?'#059669':'#b91c1c')+'">'+_custBRLc(grand)+'</td></tr>';
+  if(showGasto){
+    let gTot=0;
+    h+='<tr style="border-top:1px solid #e5e5e0;background:#eff6ff;font-weight:700;color:#1e40af">'
+      +'<td style="padding:9px 10px;position:sticky;left:0;background:#eff6ff">GASTO</td>'
+      +'<td style="padding:9px 10px;font-weight:400;font-size:10.5px;color:#64748b">quanto saiu no mês</td>';
+    cols.forEach(mn=>{
+      const vals=rows.map(r=>r.byMonth[mn]).filter(v=>v!=null);
+      const g=_custGastoVals(vals); gTot+=g.val;
+      h+='<td style="padding:9px 8px;text-align:right" title="'+(g.fechado?'mês fechado (soma zero) → soma dos positivos':'mês aberto → soma normal')+'">'+_custBRLc(g.val)+(g.fechado?' <span style="font-size:8px">✓</span>':'')+'</td>';
+    });
+    h+='<td style="padding:9px 10px;text-align:right;border-left:2px solid #e5e5e0">'+_custBRLc(gTot)+'</td></tr>';
+  }
+  h+='</tfoot></table></div>';
+  return h;
+}
+function custSetTab(t){ const store=_custLoad(); store.tab=(t==='real'?'real':'pt'); _custSave(store); custRender(); }
 function _custChartBlock(monthNums, ksbByMonth, ksbHas, pt){
   const budget={}, gasto={}; let tB=0,tG=0;
   monthNums.forEach(mn=>{
     let b=0; if(pt) Object.values(pt.accounts).forEach(a=>{ const v=a.byMonth[mn]||0; if(v>0) b+=v; }); // budget = só positivos
-    let g=0; if(ksbHas[mn]){ const map=ksbByMonth[mn]||{}; Object.keys(map).forEach(c=>g+=map[c]); }
+    let g=0; if(ksbHas[mn]){ g=_custGastoVals(Object.values(ksbByMonth[mn]||{})).val; }
     budget[mn]=b; gasto[mn]=g; tB+=b; tG+=g;
   });
   const saldo=tB-tG, pctG=tB?Math.round((tG/tB)*100):0;
@@ -5655,6 +5729,7 @@ function _custChartBlock(monthNums, ksbByMonth, ksbHas, pt){
 }
 function custSetView(mode){ const store=_custLoad(); store.view=(mode==='grafico'?'grafico':'tabela'); _custSave(store); custRender(); }
 window.custSetView = custSetView;
+window.custSetTab = custSetTab;
 window.custImportPT = custImportPT;
 window.custToggleMonth = custToggleMonth;
 window.custMonthsAll = custMonthsAll;
