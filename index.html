@@ -5575,11 +5575,19 @@ function custRender(){
   // Modo GRÁFICO: Budget (PT) × Gasto (KSB1) por mês
   if(mode==='grafico'){ html += _custChartBlock(monthNums, ksbByMonth, ksbHas, pt); el.innerHTML=html; return; }
   // Sub-toggle: Planning Tool (plano) | Real (KSB1)
-  const tab = store.tab==='real' ? 'real' : 'pt';
+  const tab = (store.tab==='real'||store.tab==='pt') ? store.tab : 'ambos';
   html+='<div style="display:inline-flex;background:#eee;border-radius:9px;padding:3px;margin-bottom:12px">';
-  html+='<button onclick="custSetTab(\'pt\')" style="border:none;border-radius:7px;padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer;background:'+(tab==='pt'?'#fff':'transparent')+';color:'+(tab==='pt'?'#059669':'#777')+';box-shadow:'+(tab==='pt'?'0 1px 2px rgba(0,0,0,.08)':'none')+'">Planning Tool (plano)</button>';
+  html+='<button onclick="custSetTab(\'ambos\')" style="border:none;border-radius:7px;padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer;background:'+(tab==='ambos'?'#fff':'transparent')+';color:'+(tab==='ambos'?'#111827':'#777')+';box-shadow:'+(tab==='ambos'?'0 1px 2px rgba(0,0,0,.08)':'none')+'">Lado a lado</button>';
+  html+='<button onclick="custSetTab(\'pt\')" style="border:none;border-radius:7px;padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer;background:'+(tab==='pt'?'#fff':'transparent')+';color:'+(tab==='pt'?'#059669':'#777')+';box-shadow:'+(tab==='pt'?'0 1px 2px rgba(0,0,0,.08)':'none')+'">Planning Tool</button>';
   html+='<button onclick="custSetTab(\'real\')" style="border:none;border-radius:7px;padding:6px 14px;font-size:12.5px;font-weight:600;cursor:pointer;background:'+(tab==='real'?'#fff':'transparent')+';color:'+(tab==='real'?'#1e40af':'#777')+';box-shadow:'+(tab==='real'?'0 1px 2px rgba(0,0,0,.08)':'none')+'">Real (KSB1)</button>';
   html+='</div>';
+  if(tab==='ambos'){
+    const descMapA={};
+    ksbKeys.forEach(k=>{ (months[k].list||[]).forEach(a=>{ if(a.desc && !descMapA[a.code]) descMapA[a.code]=a.desc; }); });
+    html+=_custTableBothHTML(pt, ksbByMonth, monthNums, ksbHas, descMapA);
+    html+='<div style="font-size:11px;color:#aaa;margin-top:10px"><b style="color:#059669">Plano</b> (verde) = planning tool · <b style="color:#1e40af">Real</b> (azul) = KSB1 dos meses importados (•). <b>TOTAL</b> = soma líquida; <b>BUDGET/GASTO</b> = só positivos (real usa a regra do fechamento). Segue o filtro de meses.</div>';
+    el.innerHTML=html; return;
+  }
   if(tab==='pt'){
     if(!pt){
       html+='<div style="border:1px dashed #a7f3d0;border-radius:12px;background:#f0fdf4;color:#059669;font-size:13.5px;text-align:center;padding:40px 24px">Planning tool ainda não importado.<br>Clique em <b>⬆ Importar PT (plano)</b>.</div>';
@@ -5639,6 +5647,81 @@ function _custGastoVals(vals){
   return { val: fechado ? pos : net, fechado };
 }
 function _custSpend(md){ return _custGastoVals((md && md.list ? md.list : []).map(a=>a.val||0)).val; }
+function _custTableBothHTML(pt, ksbByMonth, cols, ksbHas, descMap){
+  const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const PT_BG='#ecfdf5', RE_BG='#eff6ff';
+  const codes={};
+  if(pt) Object.keys(pt.accounts).forEach(c=>codes[c]=1);
+  cols.forEach(mn=>{ const m=ksbByMonth[mn]||{}; Object.keys(m).forEach(c=>codes[c]=1); });
+  const rows=Object.keys(codes).map(c=>{
+    const ptA = pt && pt.accounts[c];
+    const r={ code:c, desc:(ptA&&ptA.desc)||descMap[c]||'', p:{}, r:{}, tp:0, tr:0 };
+    cols.forEach(mn=>{
+      const pv = ptA && (mn in ptA.byMonth) ? ptA.byMonth[mn] : null;
+      const rv = (ksbByMonth[mn]&&(c in ksbByMonth[mn])) ? ksbByMonth[mn][c] : null;
+      if(pv!=null){ r.p[mn]=pv; r.tp+=pv; }
+      if(rv!=null){ r.r[mn]=rv; r.tr+=rv; }
+    });
+    return r;
+  }).sort((a,b)=>Math.abs(b.tp||b.tr)-Math.abs(a.tp||a.tr));
+  let h='<div style="background:#fff;border:1px solid #eee;border-radius:10px;overflow:auto">';
+  h+='<table style="width:100%;border-collapse:collapse;font-size:11.5px;white-space:nowrap">';
+  // Cabeçalho: 1ª linha = meses (2 colunas cada) | 2ª linha = Plano / Real
+  h+='<thead><tr style="background:#f5f5ef;color:#555">'
+    +'<th rowspan="2" style="text-align:left;padding:6px 10px;font-weight:600;position:sticky;left:0;background:#f5f5ef;border-bottom:1px solid #e5e5e0">Conta</th>'
+    +'<th rowspan="2" style="text-align:left;padding:6px 10px;font-weight:600;border-bottom:1px solid #e5e5e0">Descrição</th>';
+  cols.forEach(mn=>{ h+='<th colspan="2" style="text-align:center;padding:5px 6px;font-weight:700;border-left:2px solid #e5e5e0;'+(ksbHas[mn]?'color:#1e40af':'')+'">'+_CUST_MESES[mn-1]+(ksbHas[mn]?' •':'')+'</th>'; });
+  h+='<th colspan="2" style="text-align:center;padding:5px 6px;font-weight:700;border-left:3px solid #d5d5cf">Total</th></tr>';
+  h+='<tr style="background:#f5f5ef;color:#777;font-size:10px">';
+  cols.forEach(()=>{ h+='<th style="text-align:right;padding:3px 6px;font-weight:600;color:#059669;background:'+PT_BG+';border-left:2px solid #e5e5e0">Plano</th>'
+                      +'<th style="text-align:right;padding:3px 6px;font-weight:600;color:#1e40af;background:'+RE_BG+'">Real</th>'; });
+  h+='<th style="text-align:right;padding:3px 6px;font-weight:600;color:#059669;background:'+PT_BG+';border-left:3px solid #d5d5cf">Plano</th>'
+    +'<th style="text-align:right;padding:3px 6px;font-weight:600;color:#1e40af;background:'+RE_BG+'">Real</th></tr></thead><tbody>';
+  rows.forEach(a=>{
+    const isCnc=a.code==='41702200';
+    h+='<tr style="border-top:1px solid #f0f0eb">'
+      +'<td style="padding:5px 10px;font-family:monospace;font-weight:600;position:sticky;left:0;background:#fff">'+esc(a.code)+(isCnc?' <span style="font-family:sans-serif;font-size:8px;background:#1e40af;color:#fff;border-radius:4px;padding:1px 4px">CNC</span>':'')+'</td>'
+      +'<td style="padding:5px 10px;color:#444;max-width:200px;overflow:hidden;text-overflow:ellipsis">'+esc(a.desc||'—')+'</td>';
+    cols.forEach(mn=>{
+      const pv=a.p[mn], rv=a.r[mn];
+      h+='<td style="padding:5px 6px;text-align:right;background:'+PT_BG+';border-left:2px solid #e5e5e0;color:'+(pv==null?'#cbd5c8':(pv>=0?'#111827':'#b91c1c'))+'">'+(pv==null?'—':_custBRLc(pv))+'</td>';
+      h+='<td style="padding:5px 6px;text-align:right;background:'+RE_BG+';color:'+(rv==null?'#c7d2e5':(rv>=0?'#111827':'#b91c1c'))+'">'+(rv==null?'—':_custBRLc(rv))+'</td>';
+    });
+    h+='<td style="padding:5px 6px;text-align:right;font-weight:700;background:'+PT_BG+';border-left:3px solid #d5d5cf;color:'+(a.tp>=0?'#111827':'#b91c1c')+'">'+_custBRLc(a.tp)+'</td>'
+      +'<td style="padding:5px 6px;text-align:right;font-weight:700;background:'+RE_BG+';color:'+(a.tr>=0?'#111827':'#b91c1c')+'">'+_custBRLc(a.tr)+'</td></tr>';
+  });
+  // Rodapé: TOTAL (líquido) e GASTO/BUDGET
+  let gtp=0,gtr=0;
+  h+='</tbody><tfoot><tr style="border-top:2px solid #e5e5e0;background:#faf9f6;font-weight:700">'
+    +'<td style="padding:8px 10px;position:sticky;left:0;background:#faf9f6">TOTAL</td>'
+    +'<td style="padding:8px 10px;font-weight:400;font-size:10px;color:#94a3b8">soma líquida</td>';
+  cols.forEach(mn=>{
+    let tp=0,tr=0,hasP=false,hasR=false;
+    rows.forEach(a=>{ if(a.p[mn]!=null){tp+=a.p[mn];hasP=true;} if(a.r[mn]!=null){tr+=a.r[mn];hasR=true;} });
+    gtp+=tp; gtr+=tr;
+    h+='<td style="padding:8px 6px;text-align:right;background:'+PT_BG+';border-left:2px solid #e5e5e0;color:'+(tp>=0?'#059669':'#b91c1c')+'">'+(hasP?_custBRLc(tp):'—')+'</td>'
+      +'<td style="padding:8px 6px;text-align:right;background:'+RE_BG+';color:'+(tr>=0?'#1e40af':'#b91c1c')+'">'+(hasR?_custBRLc(tr):'—')+'</td>';
+  });
+  h+='<td style="padding:8px 6px;text-align:right;background:'+PT_BG+';border-left:3px solid #d5d5cf;color:'+(gtp>=0?'#059669':'#b91c1c')+'">'+_custBRLc(gtp)+'</td>'
+    +'<td style="padding:8px 6px;text-align:right;background:'+RE_BG+';color:'+(gtr>=0?'#1e40af':'#b91c1c')+'">'+_custBRLc(gtr)+'</td></tr>';
+  // Linha BUDGET x GASTO
+  let bTot=0,gTot=0;
+  h+='<tr style="border-top:1px solid #e5e5e0;background:#f0fdf9;font-weight:700">'
+    +'<td style="padding:8px 10px;position:sticky;left:0;background:#f0fdf9">BUDGET / GASTO</td>'
+    +'<td style="padding:8px 10px;font-weight:400;font-size:10px;color:#94a3b8">só positivos / regra do fechamento</td>';
+  cols.forEach(mn=>{
+    let b=0; rows.forEach(a=>{ const v=a.p[mn]; if(v!=null&&v>0) b+=v; });
+    const rvals=rows.map(a=>a.r[mn]).filter(v=>v!=null);
+    const g=rvals.length?_custGastoVals(rvals):{val:null,fechado:false};
+    bTot+=b; if(g.val!=null) gTot+=g.val;
+    h+='<td style="padding:8px 6px;text-align:right;background:'+PT_BG+';border-left:2px solid #e5e5e0;color:#059669">'+(b?_custBRLc(b):'—')+'</td>'
+      +'<td style="padding:8px 6px;text-align:right;background:'+RE_BG+';color:#1e40af" title="'+(g.fechado?'mês fechado (soma zero) → soma dos positivos':'mês aberto → soma normal')+'">'+(g.val!=null?_custBRLc(g.val)+(g.fechado?' <span style="font-size:8px">✓</span>':''):'—')+'</td>';
+  });
+  h+='<td style="padding:8px 6px;text-align:right;background:'+PT_BG+';border-left:3px solid #d5d5cf;color:#059669">'+_custBRLc(bTot)+'</td>'
+    +'<td style="padding:8px 6px;text-align:right;background:'+RE_BG+';color:#1e40af">'+_custBRLc(gTot)+'</td></tr>';
+  h+='</tfoot></table></div>';
+  return h;
+}
 function _custTableHTML(rows, cols, tint, ksbHas, showGasto){
   const esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const colTot={}; let grand=0;
@@ -5682,7 +5765,7 @@ function _custTableHTML(rows, cols, tint, ksbHas, showGasto){
   h+='</tfoot></table></div>';
   return h;
 }
-function custSetTab(t){ const store=_custLoad(); store.tab=(t==='real'?'real':'pt'); _custSave(store); custRender(); }
+function custSetTab(t){ const store=_custLoad(); store.tab=(t==='real'||t==='pt')?t:'ambos'; _custSave(store); custRender(); }
 function _custChartBlock(monthNums, ksbByMonth, ksbHas, pt){
   const budget={}, gasto={}; let tB=0,tG=0;
   monthNums.forEach(mn=>{
