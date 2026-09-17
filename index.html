@@ -2429,7 +2429,7 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
         <div class="entry-card-title" data-i18n="entry.torre.title">TORRE DE MANUTENÇÃO</div>
         <div class="entry-card-sub" data-i18n="entry.torre.sub">Planejamento CNC completo</div>
         <div class="entry-card-desc" data-i18n="entry.torre.desc">Gestão completa: solicitações, custos, calendário e desenhos</div>
-        <div class="entry-card-tabs" data-i18n="entry.torre.tabs">SITES · CUSTOS · SOLICITAÇÕES · SEMANAL · MENSAL · DESENHOS</div>
+        <div class="entry-card-tabs" data-i18n="entry.torre.tabs">SITES · CUSTOS · SOLICITAÇÕES · DESENHOS</div>
       </div>
       <div class="entry-card entry-card-apont" onclick="entrySelectMode('apontamento')">
         <div class="entry-icon">🔧</div>
@@ -2479,8 +2479,6 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
     <div class="tab-group tab-group-cnc">
       <span class="tab-group-label-v2" data-i18n="tab.cnc.label">PLANEJAMENTO CNC</span>
       <button class="tab sol-entry on" onclick="setView('solicitacoes')" data-i18n="tab.solicitacoes">SOLICITAÇÕES</button>
-      <button class="tab" onclick="setView('semanal')" data-i18n="tab.semanal">SEMANAL</button>
-      <button class="tab" onclick="setView('mensal')" data-i18n="tab.mensal">MENSAL</button>
       <button class="tab" onclick="setView('desenhos')" data-i18n="tab.desenhos">DESENHOS</button>
     </div>
   </div>
@@ -3349,7 +3347,7 @@ const I18N = {
     'entry.torre.title': 'TORRE DE MANUTENÇÃO',
     'entry.torre.sub': 'Planejamento CNC completo',
     'entry.torre.desc': 'Gestão completa: solicitações, custos, calendário e desenhos',
-    'entry.torre.tabs': 'SITES · CUSTOS · SOLICITAÇÕES · SEMANAL · MENSAL · DESENHOS',
+    'entry.torre.tabs': 'SITES · CUSTOS · SOLICITAÇÕES · DESENHOS',
     // PIN modal
     'pin.title': 'Acesso restrito',
     'pin.sub': 'Digite o PIN da Torre de Manutenção',
@@ -3662,7 +3660,7 @@ const I18N = {
     'entry.torre.title': 'MAINTENANCE TOWER',
     'entry.torre.sub': 'Complete CNC planning',
     'entry.torre.desc': 'Full management: requests, costs, calendar and drawings',
-    'entry.torre.tabs': 'SITES · COSTS · REQUESTS · WEEKLY · MONTHLY · DRAWINGS',
+    'entry.torre.tabs': 'SITES · COSTS · REQUESTS · DRAWINGS',
     'pin.title': 'Restricted access',
     'pin.sub': 'Enter the Maintenance Tower PIN',
     'pin.cancel': 'Cancel',
@@ -13222,7 +13220,7 @@ function openD(id) {
       <button class="sol-btn" onclick="Sol.addNote('${r.id}')" style="white-space:nowrap;background:#fffbeb;color:#92400e;border-color:#fcd34d">📝 Adicionar nota</button>
     </div>
 
-    <div class="sol-mft" style="gap:8px"><button class="sol-btn" onclick="Sol.createRelated('${r.id}')" style="background:#2c5aa0;color:#fff;border-color:#2c5aa0" title="Criar nova solicitação relacionada a esta (mesmo grupo de peça/projeto)">➕ Criar Relacionada</button><button class="sol-btn" onclick="Sol.notifyEmail('${r.id}')" style="background:#fff;color:#2c5aa0;border-color:#2c5aa0" title="Notificar por e-mail — abre seu cliente de e-mail com tudo preenchido">📧 Notificar</button><button class="sol-btn" onclick="Sol.deleteSol('${r.id}')" style="background:#fff;color:#b91c1c;border-color:#b91c1c" title="Excluir esta solicitação do sistema (requer senha)">🗑 Excluir</button><button class="sol-btn" onclick="Sol.closeD()">Fechar</button></div>`;
+    <div class="sol-mft" style="gap:8px"><button class="sol-btn" onclick="Sol.createRelated('${r.id}')" style="background:#2c5aa0;color:#fff;border-color:#2c5aa0" title="Criar nova solicitação relacionada a esta (mesmo grupo de peça/projeto)">➕ Criar Relacionada</button><button class="sol-btn" onclick="Sol.notifyEmail('${r.id}')" style="background:#fff;color:#2c5aa0;border-color:#2c5aa0" title="Notificar por e-mail — abre seu cliente de e-mail com tudo preenchido">📧 Notificar</button><button class="sol-btn" onclick="Sol.notifyRejectEmail('${r.id}')" style="background:#fff;color:#b91c1c;border-color:#fca5a5" title="Avisar o solicitante por e-mail de que o item foi recusado">📧 Avisar recusa</button><button class="sol-btn" onclick="Sol.deleteSol('${r.id}')" style="background:#fff;color:#b91c1c;border-color:#b91c1c" title="Excluir esta solicitação do sistema (requer senha)">🗑 Excluir</button><button class="sol-btn" onclick="Sol.closeD()">Fechar</button></div>`;
   document.getElementById('dovl').style.display='flex';
 }
 
@@ -13312,6 +13310,27 @@ function updStatus(id,st) {
       if (_emcfg.autoOnApproval) {
         // Envia silenciosamente via Power Automate; o toast confirma sucesso/erro
         setTimeout(() => notifyEmail(r.id), 250);
+      }
+    } catch(e) { /* config corrompida — ignora */ }
+  }
+  // ── Aviso de RECUSA ao solicitante ──
+  if (st === 'Rejeitado' && st !== _statusAntes) {
+    try {
+      const _emcfg = _loadEmailCfg();
+      if (_emcfg.autoOnReject) {
+        setTimeout(() => {
+          const dest = String(r.em || '').trim();
+          const motivo = prompt(
+            'Avisar o solicitante da recusa por e-mail?\n\n'
+            + 'Para: ' + (dest || '(sem e-mail na solicitação — vou perguntar)') + '\n\n'
+            + 'Escreva o motivo da recusa (ou Cancelar para não enviar):', '');
+          if (motivo === null) return;           // cancelou → status fica recusado, sem e-mail
+          _addHistory(r, 'status', 'Motivo da recusa', '', motivo || '(não informado)');
+          _persistRec(r);
+          const histEl2 = document.getElementById('dHistory');
+          if (histEl2) histEl2.innerHTML = renderHistory(r);
+          notifyRejectEmail(r.id, motivo);
+        }, 250);
       }
     } catch(e) { /* config corrompida — ignora */ }
   }
@@ -13521,7 +13540,8 @@ const EMAIL_CFG_DEFAULT = {
   to: 'luciano.crivellari@unilever.com',
   cc: '',
   bcc: '',
-  autoOnApproval: true
+  autoOnApproval: true,
+  autoOnReject: true
 };
 function _loadEmailCfg() {
   try {
@@ -13557,6 +13577,31 @@ Material: ${r.materialCompra || '(a definir)'}
 SAP: ${r.sp || '-'} | SAP IRON: ${r.sapIron || '-'}
 Desenho: ${r.cd || '-'}
 Custo unit (Forn): R$ ${cuFmt}
+
+--
+CNC Planner / Unilever Brasil`;
+}
+
+/* Corpo do e-mail de RECUSA — enviado ao solicitante quando a solicitação
+   muda para o status "Rejeitado". */
+function _buildRejectEmailBody(r, motivo) {
+  const fmtDt = s => s ? s.split('-').reverse().join('/') : '-';
+  const mot = String(motivo || '').trim();
+  return `Ola${r.sl ? ' ' + String(r.sl).split(' ')[0] : ''},
+
+Sua solicitacao #${r.id} foi RECUSADA e nao seguira para producao/compra.
+
+== SOLICITACAO ==
+Peca: ${r.p || '-'}
+Planta: ${r.pl || '-'} | Area: ${r.ar || '-'} | Qtd: ${r.qt || '-'}
+Desenho: ${r.cd || '-'}
+Data da solicitacao: ${fmtDt(r.dt)}
+
+== MOTIVO DA RECUSA ==
+${mot || '(nao informado)'}
+
+Se precisar seguir com o item, responda este e-mail ou abra uma nova
+solicitacao com as informacoes ajustadas.
 
 --
 CNC Planner / Unilever Brasil`;
@@ -13666,6 +13711,49 @@ async function notifyEmail(recordId) {
   _emailToast('⚠ ' + errMsg, 'error');
   setTimeout(() => _showEmailPreview(cfg, subject, bodyTxt), 900);
 }
+
+/* Avisa o SOLICITANTE de que o item foi recusado.
+   Destinatário = e-mail da própria solicitação (campo "em" vindo do Forms).
+   motivoPre: se vier preenchido, não pergunta o motivo de novo. */
+async function notifyRejectEmail(recordId, motivoPre) {
+  const r = data.find(d => String(d.id) === String(recordId));
+  if (!r) { alert('Solicitacao nao encontrada.'); return; }
+  const cfg = _loadEmailCfg();
+
+  let dest = String(r.em || '').trim();
+  if (!dest) {
+    dest = String(prompt('Esta solicitacao nao tem o e-mail do solicitante.\n\nDigite o e-mail para avisar da recusa:', '') || '').trim();
+    if (!dest) { _emailToast('⚠ Envio cancelado — sem destinatário', 'error'); return; }
+  }
+
+  let motivo = (motivoPre === undefined || motivoPre === null) ? null : String(motivoPre);
+  if (motivo === null) {
+    motivo = prompt('Motivo da recusa (vai no e-mail para ' + dest + '):', '');
+    if (motivo === null) { _emailToast('Envio cancelado', 'error'); return; }
+  }
+
+  const subject = `[CNC] Solicitacao recusada: #${r.id} - ${(r.p||'').slice(0,60)}`;
+  const bodyTxt = _buildRejectEmailBody(r, motivo);
+  const bodyHtml = '<pre style="font-family:Consolas,Menlo,Courier New,monospace;font-size:13px;line-height:1.5;white-space:pre-wrap;color:#222">' +
+    bodyTxt.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+
+  _emailToast('📤 Enviando aviso de recusa...', 'info');
+  const result = await _sendViaFlow({
+    to: dest,
+    cc: cfg.cc || '',
+    bcc: cfg.bcc || '',
+    subject: subject,
+    body: bodyHtml
+  });
+  if (result.ok) {
+    _emailToast(result.mode === 'no-cors'
+      ? '📤 Aviso de recusa enviado para ' + dest + ' — confira o Outlook em ~1 min'
+      : '✓ Aviso de recusa enviado para ' + dest, 'success');
+    return;
+  }
+  _emailToast('⚠ Falha ao enviar. Abrindo preview manual...', 'error');
+  setTimeout(() => _showEmailPreview({ to: dest, cc: cfg.cc || '', bcc: cfg.bcc || '' }, subject, bodyTxt), 900);
+}
 // Modal de preview com múltiplos caminhos de envio
 function _showEmailPreview(cfg, subject, body) {
   let m = document.getElementById('emailPreviewOvl');
@@ -13773,6 +13861,10 @@ function openEmailCfg() {
           <input type="checkbox" id="cfgEmAuto" ${cfg.autoOnApproval?'checked':''} style="width:16px;height:16px;cursor:pointer">
           <span>Perguntar automaticamente ao mudar status para <b>"Aprovação para compra"</b></span>
         </label>
+        <label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;cursor:pointer;font-size:13px;color:#991b1b;margin-top:10px">
+          <input type="checkbox" id="cfgEmReject" ${cfg.autoOnReject?'checked':''} style="width:16px;height:16px;cursor:pointer">
+          <span>Ao mudar status para <b>"Rejeitado"</b>, perguntar o motivo e avisar o <b>solicitante</b> por e-mail</span>
+        </label>
       </div>
       <div style="padding:12px 22px;border-top:1px solid #e5e7eb;display:flex;gap:8px;justify-content:flex-end;background:#fff">
         <button onclick="document.getElementById('emailCfgOvl').style.display='none'" style="background:#fff;color:#374151;border:1px solid #d1d5db;padding:7px 14px;border-radius:5px;font-size:12px;font-weight:600;cursor:pointer">Cancelar</button>
@@ -13786,7 +13878,8 @@ function saveEmailCfg() {
     to: document.getElementById('cfgEmTo').value.trim(),
     cc: document.getElementById('cfgEmCc').value.trim(),
     bcc: document.getElementById('cfgEmBcc').value.trim(),
-    autoOnApproval: document.getElementById('cfgEmAuto').checked
+    autoOnApproval: document.getElementById('cfgEmAuto').checked,
+    autoOnReject: !!(document.getElementById('cfgEmReject') || {}).checked
   };
   _saveEmailCfgRaw(cfg);
   document.getElementById('emailCfgOvl').style.display='none';
@@ -15177,7 +15270,7 @@ return {
   openUserNameConfig, addNote,
   openList, closeList, updBuy, addBuyItem, removeBuyItem, toggleBlChk, updateBuyItem, exportListCSV, renderList,
   // Notificação por e-mail (mailto:)
-  notifyEmail, openEmailCfg, saveEmailCfg,
+  notifyEmail, notifyRejectEmail, openEmailCfg, saveEmailCfg,
   dov, dlv, ndrop, ddrop, nfs, dfs,
   // Bulk attach de desenhos por nome de arquivo
   openBulkAttach, closeBulkAttach,
