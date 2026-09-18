@@ -11896,6 +11896,8 @@ function _persistRec(r){
     pedMat: r.pedMat,       // ← pedido material/fornecedor
     prevForn: r.prevForn,   // ← previsão entrega fornecedor (YYYY-MM-DD)
     nf: r.nf || '',  // ← número da nota fiscal
+    matQtd: (r.matQtd != null ? r.matQtd : ''),        // ← qtd de material (barras) a comprar
+    matExtrasQtd: Array.isArray(r.matExtrasQtd) ? r.matExtrasQtd : [],
     mpIron: r.mpIron || '',    // ← código SAP da MATÉRIA-PRIMA (material comprado)
     sapIron: r.sapIron || '',  // ← número SAP IRON
     pedidoIron: r.pedidoIron || '',  // ← N° do Pedido de compra IRON
@@ -12794,6 +12796,8 @@ function _hydrate(r, mods, isNew) {
     pedCompra:      (m.pedCompra !== undefined) ? m.pedCompra : (r.pedCompra || ''),
     pedMat:         (m.pedMat !== undefined) ? m.pedMat : (r.pedMat || ''),
     nf:             (m.nf !== undefined) ? m.nf : (r.nf || ''),
+    matQtd:         (m.matQtd !== undefined) ? m.matQtd : (r.matQtd != null ? r.matQtd : ''),
+    matExtrasQtd:   Array.isArray(m.matExtrasQtd) ? m.matExtrasQtd : (Array.isArray(r.matExtrasQtd) ? r.matExtrasQtd : []),
     mpIron:         (m.mpIron !== undefined) ? m.mpIron : (r.mpIron || ''),
     sapIron:        (m.sapIron !== undefined) ? m.sapIron : (r.sapIron || ''),
     pedidoIron:     (m.pedidoIron !== undefined) ? m.pedidoIron : (r.pedidoIron || ''),
@@ -13271,6 +13275,10 @@ function openD(id) {
           <input id="dMaterialSapInput" type="text" placeholder="Digite o código SAP" value="${MATERIAL_SAP_LOOKUP[(r.materialCompra||'').trim().toUpperCase()] || ''}" oninput="Sol.saveSapToMaterial('${r.id}', this.value)" style="border:none;background:transparent;font-family:var(--mono);color:#1a56db;font-weight:600;width:130px;outline:none;font-size:12px">
           <span id="dMaterialSapHint" style="font-style:italic;color:#dc2626;font-size:11px"></span>
         </div>
+        <div style="display:inline-flex;align-items:center;gap:6px;font-size:12px;background:#ecfdf5;padding:4px 10px;border-radius:5px;border:1px solid #a7f3d0" title="Quantas barras/chapas comprar. Uma barra costuma render mais de uma peça, então este número não é a quantidade de peças.">
+          <span style="color:#065f46;font-weight:500">📦 Qtd a comprar:</span>
+          <input id="dMatQtd" type="number" min="0" step="1" placeholder="—" value="${r.matQtd != null && r.matQtd !== '' ? r.matQtd : ''}" oninput="Sol.saveMatQtd('${r.id}', this.value)" style="border:none;background:transparent;color:#065f46;font-weight:700;width:52px;outline:none;font-size:12px;font-family:inherit">
+        </div>
         <div id="dMaterialForn" style="display:${MATERIAL_FORN_LOOKUP[(r.materialCompra||'').trim().toUpperCase()] ? 'inline-flex' : 'none'};align-items:center;gap:6px;font-size:12px;background:#fef3c7;padding:4px 10px;border-radius:5px;border:1px solid #fde68a">${
           (function(){
             const v = (r.materialCompra||'').trim();
@@ -13295,6 +13303,10 @@ function openD(id) {
               <div class="mat-extra-sap" style="display:inline-flex;align-items:center;gap:6px;font-size:11px;background:#f1f5f9;padding:3px 8px;border-radius:4px;border:1px solid #e2e8f0">
                 <span style="color:#666;font-weight:500">Cód SAP:</span>
                 <input type="text" placeholder="Digite o SAP" value="${MATERIAL_SAP_LOOKUP[(mat||'').trim().toUpperCase()] || ''}" oninput="Sol.saveMatExtraSap('${r.id}', ${i}, this.value)" style="border:none;background:transparent;font-family:var(--mono);color:#1a56db;font-weight:600;width:120px;outline:none;font-size:11px">
+              </div>
+              <div style="display:inline-flex;align-items:center;gap:5px;font-size:11px;background:#ecfdf5;padding:3px 8px;border-radius:4px;border:1px solid #a7f3d0">
+                <span style="color:#065f46;font-weight:500">📦 Qtd:</span>
+                <input type="number" min="0" step="1" placeholder="—" value="${(Array.isArray(r.matExtrasQtd) && r.matExtrasQtd[i] != null) ? r.matExtrasQtd[i] : ''}" oninput="Sol.saveMatExtraQtd('${r.id}', ${i}, this.value)" style="border:none;background:transparent;color:#065f46;font-weight:700;width:46px;outline:none;font-size:11px;font-family:inherit">
               </div>
               <div class="mat-extra-forn" style="display:${MATERIAL_FORN_LOOKUP[(mat||'').trim().toUpperCase()] ? 'inline-flex' : 'none'};align-items:center;gap:5px;font-size:11px;background:#fef3c7;padding:3px 8px;border-radius:4px;border:1px solid #fde68a">
                 <span style="color:#92400e;font-weight:500">🏢 Fornecedor:</span> <span style="color:#78350f;font-weight:700">${MATERIAL_FORN_LOOKUP[(mat||'').trim().toUpperCase()] || ''}</span>
@@ -13535,6 +13547,10 @@ function _renderMatExtras(r) {
           <span style="color:#666;font-weight:500">Cód SAP:</span>
           <input type="text" placeholder="Digite o SAP" value="${MATERIAL_SAP_LOOKUP[(mat||'').trim().toUpperCase()] || ''}" oninput="Sol.saveMatExtraSap('${r.id}', ${i}, this.value)" style="border:none;background:transparent;font-family:var(--mono);color:#1a56db;font-weight:600;width:120px;outline:none;font-size:11px">
         </div>
+        <div style="display:inline-flex;align-items:center;gap:5px;font-size:11px;background:#ecfdf5;padding:3px 8px;border-radius:4px;border:1px solid #a7f3d0">
+          <span style="color:#065f46;font-weight:500">📦 Qtd:</span>
+          <input type="number" min="0" step="1" placeholder="—" value="${(Array.isArray(r.matExtrasQtd) && r.matExtrasQtd[i] != null) ? r.matExtrasQtd[i] : ''}" oninput="Sol.saveMatExtraQtd('${r.id}', ${i}, this.value)" style="border:none;background:transparent;color:#065f46;font-weight:700;width:46px;outline:none;font-size:11px;font-family:inherit">
+        </div>
         <div class="mat-extra-forn" style="display:${MATERIAL_FORN_LOOKUP[(mat||'').trim().toUpperCase()] ? 'inline-flex' : 'none'};align-items:center;gap:5px;font-size:11px;background:#fef3c7;padding:3px 8px;border-radius:4px;border:1px solid #fde68a">
           <span style="color:#92400e;font-weight:500">🏢 Fornecedor:</span> <span style="color:#78350f;font-weight:700">${MATERIAL_FORN_LOOKUP[(mat||'').trim().toUpperCase()] || ''}</span>
         </div>
@@ -13547,6 +13563,8 @@ function addMatExtra(id) {
   if (!r) return;
   if (!Array.isArray(r.materiaisExtras)) r.materiaisExtras = [];
   r.materiaisExtras.push('');
+  if (!Array.isArray(r.matExtrasQtd)) r.matExtrasQtd = [];
+  r.matExtrasQtd.push('');
   _persistRec(r);
   _renderMatExtras(r);
   // Foca no novo input
@@ -13561,10 +13579,39 @@ function removeMatExtra(id, idx) {
   if (!confirm('Remover este material adicional?')) return;
   const removed = r.materiaisExtras[idx];
   r.materiaisExtras.splice(idx, 1);
+  if (Array.isArray(r.matExtrasQtd)) r.matExtrasQtd.splice(idx, 1);
   _addHistory(r, 'materiaisExtras', 'Material adicional removido', removed || '(vazio)', '');
   _persistRec(r);
   _renderMatExtras(r);
 }
+/* Quantidade de MATERIAL a comprar (barras/chapas), diferente da quantidade
+   de peças da solicitação: uma barra normalmente rende várias peças. */
+let _matQtdTimer = {};
+function saveMatQtd(id, val) {
+  const r = _getRec(id);
+  if (!r) return;
+  if (_matQtdTimer[id]) clearTimeout(_matQtdTimer[id]);
+  _matQtdTimer[id] = setTimeout(() => {
+    const antes = (r.matQtd != null ? String(r.matQtd) : '');
+    const novo = String(val || '').trim();
+    r.matQtd = novo === '' ? '' : (parseFloat(novo.replace(',', '.')) || 0);
+    if (antes !== String(r.matQtd)) _addHistory(r, 'matQtd', 'Qtd de material a comprar', antes || '—', r.matQtd === '' ? '—' : String(r.matQtd));
+    _persistRec(r);
+  }, 400);
+}
+function saveMatExtraQtd(id, idx, val) {
+  const r = _getRec(id);
+  if (!r) return;
+  if (!Array.isArray(r.matExtrasQtd)) r.matExtrasQtd = [];
+  const chave = id + '_q' + idx;
+  if (_matQtdTimer[chave]) clearTimeout(_matQtdTimer[chave]);
+  _matQtdTimer[chave] = setTimeout(() => {
+    const novo = String(val || '').trim();
+    r.matExtrasQtd[idx] = novo === '' ? '' : (parseFloat(novo.replace(',', '.')) || 0);
+    _persistRec(r);
+  }, 400);
+}
+
 let _matExtraTimer = {};
 function saveMatExtra(id, idx, val) {
   const r = _getRec(id);
@@ -15530,6 +15577,7 @@ return {
   go, sb, pg,
   openD, closeD, deleteSol, closeDelete, confirmDelete, openNew, closeN, saveN,
   updStatus, rmFile, saveMaterial, saveSapToMaterial, addMatExtra, removeMatExtra, saveMatExtra, saveMatExtraSap,
+  saveMatQtd, saveMatExtraQtd,
   editCu, editCuCnc, editQtReal, saveDate, saveNF, saveDcm, saveTxt, saveSapIron, savePedidoIron, saveFormsRef, saveChaveNF, editCprod, setSavingMonth,
   // Histórico de mudanças + configuração de usuário
   openUserNameConfig, addNote,
