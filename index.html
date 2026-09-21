@@ -4,9 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Planejamento CNC — Torre de Manutenção</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- SheetJS (xlsx) sai daqui: era baixado e compilado ANTES de a página aparecer,
+     em toda carga, e só é usado ao importar/exportar Excel. Agora é carregado por
+     ensureXLSX() na hora do uso (ver _xlsxSobDemanda). -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
 
 :root{
   --bg:#ffffff;
@@ -2390,14 +2394,16 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
 #apontRoot nav > button:hover{ font-size: 14px !important; }
 </style>
 
-<!-- Microsoft 365 Auth (MSAL.js v3) -->
-<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
+<!-- Microsoft 365 Auth (MSAL.js): carregado sob demanda em msInit(), só quando
+     o Client ID estiver configurado. Hoje ele ainda não está, então a biblioteca
+     (≈200 KB) era baixada e compilada em toda carga sem nunca ser usada. -->
 
 <!-- Firebase SDK (Realtime Database) — versão compat (scripts globais) -->
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<!-- firebase-firestore-compat removido: não era usado em nenhuma parte do app.
+     Quando o apontamento passar a gravar no Firestore, carregar sob demanda. -->
 
 </head>
 <body>
@@ -2978,7 +2984,10 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
           <th class="dw-th" style="width:55px;font-size:8px">CICLO C<br>/PÇ</th>
           <th class="dw-th dw-editable-h" style="width:75px">TORNO (min)</th>
           <th class="dw-th dw-editable-h" style="width:75px">CENTRO (min)</th>
-          <th class="dw-th dw-editable-h" style="width:75px">PROG. (min)</th>
+          <th class="dw-th dw-editable-h" style="width:62px;font-size:8px" title="Setup do torno (min por lote)">SETUP<br>TORNO</th>
+          <th class="dw-th dw-editable-h" style="width:62px;font-size:8px" title="Setup do centro (min por lote)">SETUP<br>CENTRO</th>
+          <th class="dw-th dw-editable-h" style="width:62px;font-size:8px" title="Programação do torno (min por lote)">PROG.<br>TORNO</th>
+          <th class="dw-th dw-editable-h" style="width:62px;font-size:8px" title="Programação do centro (min por lote)">PROG.<br>CENTRO</th>
           <th class="dw-th" style="width:80px">TOTAL (min)</th>
           <th class="dw-th" style="width:55px">CX</th>
           <th class="dw-th" style="width:65px">AÇÕES</th>
@@ -3133,9 +3142,13 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
       </div>
     </div>
     <div class="pm-cfg">
-      <span class="pm-cfg-label">MÁQ:</span>
-      <button class="pm-toggle tr on" id="togT" onclick="togMach('torno')"><div class="pm-tdot" style="background:#3b82f6"></div>TORNO 2X</button>
-      <button class="pm-toggle tc on" id="togC" onclick="togMach('centro')"><div class="pm-tdot" style="background:#7c3aed"></div>CENTRO 3X</button>
+      <span class="pm-cfg-label" title="Defina por onde a peça passa. Com a rota fixada, a IA não precisa adivinhar a máquina e a estimativa fica bem mais precisa.">ROTA:</span>
+      <select id="pmRota" class="pm-field-input" style="width:auto;min-width:150px;padding:4px 8px;cursor:pointer" title="Defina por onde a peça passa">
+        <option value="">🤖 IA decide</option>
+        <option value="TORNO_ROMI_2X">⚙️ Só torno</option>
+        <option value="CENTRO_ROMI_3X">🔲 Só centro</option>
+        <option value="AMBOS">⚙️🔲 Torno + centro</option>
+      </select>
       <div class="pm-vsep"></div>
       <div class="pm-field"><span class="pm-field-label">SETUP T:</span><input type="number" class="pm-field-input" id="stT" value="30" min="0"><span class="pm-field-unit">min</span></div>
       <div class="pm-field"><span class="pm-field-label">SETUP C:</span><input type="number" class="pm-field-input" id="stC" value="45" min="0"><span class="pm-field-unit">min</span></div>
@@ -4257,10 +4270,6 @@ let msSiteId = null;              // ID do site SharePoint (resolvido após logi
 
 // ─── Inicialização do MSAL ───
 async function msInit() {
-  if (typeof msal === 'undefined') {
-    console.warn('[MS] MSAL.js não carregado — aguardando CDN');
-    return;
-  }
   if (MS_CONFIG.clientId === '__SUBSTITUIR_PELO_CLIENT_ID__') {
     // Sem Client ID configurado — item do menu fica em "modo configuração"
     const item = document.getElementById('tbMoreItemMs');
@@ -4268,6 +4277,16 @@ async function msInit() {
       item.title = 'Aguardando Client ID do TI Unilever. Clique pra ver instruções.';
     }
     return;
+  }
+  if (typeof msal === 'undefined') {
+    // carrega a biblioteca só agora, porque existe Client ID
+    const ok = await new Promise(res => {
+      const sc = document.createElement('script');
+      sc.src = 'https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js';
+      sc.onload = () => res(true); sc.onerror = () => res(false);
+      document.head.appendChild(sc);
+    });
+    if (!ok || typeof msal === 'undefined') { console.warn('[MS] MSAL.js não carregou'); return; }
   }
   msalInstance = new msal.PublicClientApplication({
     auth: {
@@ -7537,7 +7556,7 @@ function pmSetLive(state,txt){
 }
 
 function openGlobalPM(){pmId=null;document.getElementById('pmReq').textContent='REQ —';document.getElementById('pmName').textContent='Análise Global';document.getElementById('pmSite').textContent='—';document.getElementById('pmQtdChip').textContent='— pcs';document.getElementById('pmMat').textContent='—';document.getElementById('pmQtdI').value='1';pmClearResults();document.getElementById('pmOv').style.display='flex';}
-function openPMforItem(id){pmId=id;const d=allData.find(x=>x._id===id);if(!d)return;document.getElementById('pmReq').textContent='REQ '+(d.req||'—');document.getElementById('pmName').textContent=(d.nome||'').trim();document.getElementById('pmSite').textContent=d.site||'—';document.getElementById('pmQtdChip').textContent=(d.qtd||1)+' pcs';document.getElementById('pmMat').textContent=d._matIdent||'—';document.getElementById('pmQtdI').value=d.qtd||1;if(d._drawing){pmB64=d._drawing;pmType=d._drawingType||'application/pdf';pmName=d._drawingName||'desenho';pmBytes=0;pmShowFile();}else pmClearFile();if(d._pmResult){pmResult=d._pmResult;pmRender(d._pmResult);document.getElementById('pmApply').disabled=false;}else pmClearResults();document.getElementById('pmOv').style.display='flex';}
+function openPMforItem(id){pmId=id;const d=allData.find(x=>x._id===id);if(!d)return;document.getElementById('pmReq').textContent='REQ '+(d.req||'—');document.getElementById('pmName').textContent=(d.nome||'').trim();document.getElementById('pmSite').textContent=d.site||'—';document.getElementById('pmQtdChip').textContent=(d.qtd||1)+' pcs';document.getElementById('pmMat').textContent=d._matIdent||'—';document.getElementById('pmQtdI').value=d.qtd||1;if(d._drawing){pmB64=d._drawing;pmType=d._drawingType||'application/pdf';pmName=d._drawingName||'desenho';pmBytes=0;pmShowFile();}else pmClearFile();if(d._pmResult){pmResult=d._pmResult;pmRender(d._pmResult);document.getElementById('pmApply').disabled=false;}else pmClearResults();try{const _sr=document.getElementById('pmRota');if(_sr)_sr.value=_pmRotaDe(d.req,d._rotaUser)||'';}catch(_e){}document.getElementById('pmOv').style.display='flex';}
 function closePM(){document.getElementById('pmOv').style.display='none';}
 
 function togMach(m){machOn[m]=!machOn[m];const id=m==='torno'?'togT':'togC';document.getElementById(id).classList.toggle('on',machOn[m]);}
@@ -7954,11 +7973,12 @@ JSON:{"usa_torno":bool,"usa_centro":bool,"motivo_direcionamento":"curto","maquin
     }catch(e){ console.warn('Extração falhou:', e.message); }
   }
 
-  // Injetar referências reais do operador no prompt
-  const calBlock=buildCalibrationBlock();
+  // Rota: a que vier nas opções, ou a que o técnico já fixou para esse REQ
+  const _rotaLT = _pmRotaDe(itemData.req, opts.rota || itemData._rotaUser);
+  const calBlock=buildCalibrationBlock({ rota: _rotaLT, nome: itemData.nome, material: itemData._matIdent });
   const SYSFULL=calBlock?SYS+'\n'+calBlock:SYS;
 
-  const USR=`Peça:${(itemData.nome||'').trim()}|REQ:${itemData.req||'—'}|Qtd:${qtd}pcs|SetupT:${st}min|SetupC:${sc}min${extractedText?'\nTexto:'+extractedText.substring(0,800):''}\nJSON direto, sem markdown.`;
+  const USR=`Peça:${(itemData.nome||'').trim()}|REQ:${itemData.req||'—'}|Qtd:${qtd}pcs|SetupT:${st}min|SetupC:${sc}min${_pmRotaUSR(_rotaLT)}${extractedText?'\nTexto:'+extractedText.substring(0,800):''}\nJSON direto, sem markdown.`;
 
   const content = [
     { type: 'image', source: { type:'base64', media_type: sendType, data: sendB64 } },
@@ -7980,8 +8000,8 @@ JSON:{"usa_torno":bool,"usa_centro":bool,"motivo_direcionamento":"curto","maquin
     clearTimeout(timer);
 
     const raw = api.content?.find(b => b.type==='text')?.text || '';
-    if(!raw) return estimateFallback(itemData, st, sc);
-    return safeJSON(raw);
+    if(!raw) return _pmForcaRota(estimateFallback(itemData, st, sc), _rotaLT);
+    return _pmForcaRota(safeJSON(raw), _rotaLT);
   } catch(e) {
     clearTimeout(timer);
     // Retry pra rate limit
@@ -8153,11 +8173,15 @@ JSON:{"usa_torno":bool,"usa_centro":bool,"motivo_direcionamento":"curto","maquin
       }
     }
 
-    // Injetar referências reais do operador no prompt
-    const calBlock=buildCalibrationBlock();
+    // Rota fixada pelo técnico no seletor do modal (vazio = IA decide)
+    const _rotaPM = (document.getElementById('pmRota') || {}).value || '';
+    if (d) d._rotaUser = _rotaPM || null;
+
+    // Injetar referências reais do operador no prompt (mesma rota, peças parecidas)
+    const calBlock=buildCalibrationBlock({ rota: _rotaPM, nome: pn, material: d && d._matIdent });
     const SYSFULL=calBlock?SYS+'\n'+calBlock:SYS;
 
-    const USR=`Peça:${pn}|Lote:${qtd}pcs|SetupT:${st}min|SetupC:${sc}min|Máq:${[machOn.torno?'T2X':'',machOn.centro?'C3X':''].filter(Boolean).join('+')||'Ambas'}${extractedText?'\nTexto:'+extractedText.substring(0,1000):''}\nJSON direto, sem markdown.`;
+    const USR=`Peça:${pn}|Lote:${qtd}pcs|SetupT:${st}min|SetupC:${sc}min${_pmRotaUSR(_rotaPM)}${extractedText?'\nTexto:'+extractedText.substring(0,1000):''}\nJSON direto, sem markdown.`;
 
     const content=sendMediaType==='application/pdf'
       ?[{type:'document',source:{type:'base64',media_type:'application/pdf',data:sendB64}},{type:'text',text:USR}]
@@ -8184,6 +8208,7 @@ JSON:{"usa_torno":bool,"usa_centro":bool,"motivo_direcionamento":"curto","maquin
     }
 
     clearInterval(timerInterval);
+    result=_pmForcaRota(result, _rotaPM);
     pmResult=result;
     if(d){d._pmResult=result;d._matIdent=result.material||'';}
     document.getElementById('pmMat').textContent=result.material||'—';
@@ -8261,9 +8286,10 @@ JSON:{"usa_torno":bool,"usa_centro":bool,"motivo_direcionamento":"curto","maquin
     }
   }
 
-  const calBlock = (typeof buildCalibrationBlock === 'function') ? buildCalibrationBlock() : '';
+  const _rotaHL = _pmRotaDe(info.req, info.rota);
+  const calBlock = (typeof buildCalibrationBlock === 'function') ? buildCalibrationBlock({ rota: _rotaHL, nome: nome }) : '';
   const SYSFULL = calBlock ? SYS + '\n' + calBlock : SYS;
-  const USR = `Peça:${nome}|Lote:${qtd}pcs|SetupT:${st}min|SetupC:${sc}min${extractedText ? '\nTexto:'+extractedText.substring(0,1000) : ''}\nJSON direto, sem markdown.`;
+  const USR = `Peça:${nome}|Lote:${qtd}pcs|SetupT:${st}min|SetupC:${sc}min${_pmRotaUSR(_rotaHL)}${extractedText ? '\nTexto:'+extractedText.substring(0,1000) : ''}\nJSON direto, sem markdown.`;
   const content = sendMediaType === 'application/pdf'
     ? [{type:'document',source:{type:'base64',media_type:'application/pdf',data:sendB64}},{type:'text',text:USR}]
     : [{type:'image',source:{type:'base64',media_type:sendMediaType,data:sendB64}},{type:'text',text:USR}];
@@ -8283,7 +8309,7 @@ JSON:{"usa_torno":bool,"usa_centro":bool,"motivo_direcionamento":"curto","maquin
     result = estimateFallback({nome, qtd, req: info.req||'', _drawingName: file.name||''}, st, sc);
   }
 
-  return result;
+  return _pmForcaRota(result, _rotaHL);
 }
 
 // Aplica resultado de análise em dwLib + allData. Encapsula a lógica comum
@@ -8301,11 +8327,10 @@ window._applyAnalysisToLib = function(req, result, extra) {
   entry.material = result.material || entry.material || '—';
   entry.rota = result.maquina_principal || entry.rota || '—';
   entry.cx = result.complexidade_geral || entry.cx || '—';
-  entry.tTorno = result.total_torno_min || 0;
-  entry.tCentro = result.total_centro_min || 0;
   entry.cicloTorno = (result.linhas && result.linhas[0]) ? (result.linhas[0].ciclo_por_peca_min||0) : 0;
   entry.cicloCentro = (result.linhas && result.linhas[1]) ? (result.linhas[1].ciclo_por_peca_min||0) : 0;
-  entry.tProg = (result.linhas && result.linhas[2] && result.linhas[2].total_min) ? result.linhas[2].total_min : 0;
+  _pmGravaTempos(entry, result);                      // usinagem, setup e programação separados
+  if (result._rotaFixada) { entry.rota = result._rotaFixada; entry._rotaUser = true; }
   entry.raciocinio = result.raciocinio || entry.raciocinio || '';
   entry.sequencia = result.sequencia_operacoes || entry.sequencia || '';
   entry.linhas = result.linhas || entry.linhas || [];
@@ -8338,7 +8363,7 @@ window._applyAnalysisToLib = function(req, result, extra) {
     }
   }
   // Re-render DESENHOS se estiver aberta
-  if (curView === 'desenhos' && typeof dwRender === 'function') dwRender();
+  if (curView === 'desenhos' && typeof dwRenderSync === 'function') dwRenderSync();
 };
 
 // Fila de análise — evita disparar N fetches em paralelo ao fazer bulk upload
@@ -8443,8 +8468,9 @@ function pmApplyResult(){
   if(!pmResult||pmId===null)return;
   const d=allData.find(x=>x._id===pmId);if(!d)return;
   const prevT=d.tTorno||0, prevC=d.tCentro||0;
-  d.tTorno=pmResult.total_torno_min||0;
-  d.tCentro=pmResult.total_centro_min||0;
+  const _t=_pmTempos(pmResult);
+  d.tTorno=_t.usinT;
+  d.tCentro=_t.usinC;
   d._aiApplied=true;
   logEvent(d,'TEMPO_IA',
     prevT+prevC>0?(prevT+'+'+prevC+'m (anterior)'):'—',
@@ -8734,8 +8760,10 @@ function stItemTime(d){
   const tC = (typeof getPlanCentro === 'function') ? getPlanCentro(d) : (d.tCentro||0);
   // Buscar tempo de programação na dwLib (programação é setup único, não escala com qtd)
   const dw=(dwLib||[]).find(x=>x.req===(d.req||''));
+  if (dw) _dwNorm(dw);
   const tP=dw?dw.tProg||0:0;
-  return tT+tC+tP;
+  const tS=dw?dwSetup(dw):0;       // setup: fixo por lote, como a programação
+  return tT+tC+tS+tP;
 }
 
 // Formatar minutos → Xh Ym
@@ -9331,7 +9359,7 @@ function dwListenFirebase(){
       if(changed){
         try{ const origSet = Object.getPrototypeOf(localStorage).setItem; origSet.call(localStorage, DW_KEY, JSON.stringify(dwLib)); }catch(e){}
         const view = document.getElementById('desenhosView');
-        if(view && view.style.display !== 'none' && typeof dwRender === 'function') dwRender();
+        if(view && view.style.display !== 'none' && typeof dwRenderSync === 'function') dwRenderSync();
         console.log('[dwListenFirebase] biblioteca sincronizada:', dwLib.length, 'itens');
       }
     });
@@ -9366,6 +9394,11 @@ function dwStore(item){
   };
   // Extrair tempo de programação das linhas
   if(entry.linhas.length>=3 && entry.linhas[2].total_min) entry.tProg=entry.linhas[2].total_min;
+  // Setup em campo próprio; tTorno/tCentro ficam só com a usinagem
+  _pmGravaTempos(entry, r);
+  // Rota fixada pelo técnico vale mais que a da IA
+  if (item._rotaUser && ROTAS_PM[item._rotaUser]) { entry.rota = item._rotaUser; entry._rotaUser = true; }
+  else if (existing >= 0 && dwLib[existing]._rotaUser) { entry.rota = dwLib[existing].rota; entry._rotaUser = true; }
 
   if(existing>=0) dwLib[existing]=entry;
   else dwLib.push(entry);
@@ -9431,8 +9464,27 @@ window.dwStoreBasic = async function(info) {
     try { idbSaveDrawing('dw_' + info.req, b64, info.drawingName, info.drawingType); } catch(e) {}
   }
   // Re-render se aba Desenhos estiver aberta
-  if (curView === 'desenhos' && typeof dwRender === 'function') dwRender();
+  if (curView === 'desenhos' && typeof dwRenderSync === 'function') dwRenderSync();
 };
+
+/* Re-render pedido por sincronização (Firebase, backlog, análise em lote).
+   Várias chegam em sequência; aqui viram uma só. E se a pessoa estiver
+   digitando num campo da tabela, espera ela sair do campo — antes, a tabela
+   era redesenhada no meio da digitação e o cursor sumia. */
+let _dwSyncTimer = null;
+function dwRenderSync(){
+  clearTimeout(_dwSyncTimer);
+  _dwSyncTimer = setTimeout(() => {
+    const body = document.getElementById('dwBody');
+    const ativo = document.activeElement;
+    if (body && ativo && body.contains(ativo) && /INPUT|SELECT|TEXTAREA/.test(ativo.tagName)) {
+      ativo.addEventListener('blur', () => dwRenderSync(), { once: true });
+      return;
+    }
+    if (typeof dwRender === 'function') dwRender();
+  }, 300);
+}
+window.dwRenderSync = dwRenderSync;
 
 // Debounce para busca
 let _dwTimer=null;
@@ -9442,6 +9494,42 @@ function dwRenderDebounced(){
   if (el && el.value === '') { dwRender(); return; }
   _dwTimer=setTimeout(dwRender,200);
 }
+
+/* ════════════════════════════════════════════════════════════════════
+   TEMPOS POR MÁQUINA — setup e programação separados para torno e centro
+   Campos: setupTorno, setupCentro, progTorno, progCentro (min, por lote).
+   tProg continua existindo e passa a ser SEMPRE progTorno + progCentro —
+   assim tudo que já lia tProg (capacidade dos Sites, exportações, IA,
+   apontamento) continua funcionando sem mudança.
+   ════════════════════════════════════════════════════════════════════ */
+function _dwNorm(d){
+  if (!d) return d;
+  ['setupTorno','setupCentro','progTorno','progCentro'].forEach(k => {
+    if (d[k] == null || isNaN(d[k])) d[k] = 0;
+  });
+  // Registros antigos só tinham um tempo de programação (tProg). Ele é
+  // distribuído pela rota: torno → torno, centro → centro, AMBOS → na
+  // proporção do tempo de usinagem de cada máquina (metade/metade se zerado).
+  if (!d._progSplit) {
+    const tp = Math.max(0, parseFloat(d.tProg) || 0);
+    if (tp > 0 && !d.progTorno && !d.progCentro) {
+      const rota = String(d.rota || '').toUpperCase();
+      if (rota.includes('TORNO') && !rota.includes('AMBOS')) d.progTorno = tp;
+      else if (rota.includes('CENTRO') && !rota.includes('AMBOS')) d.progCentro = tp;
+      else {
+        const t = d.tTorno || 0, c = d.tCentro || 0;
+        d.progTorno = (t + c) > 0 ? Math.round(tp * t / (t + c)) : Math.round(tp / 2);
+        d.progCentro = tp - d.progTorno;          // soma continua exata
+      }
+    }
+    d._progSplit = true;
+  }
+  d.tProg = (d.progTorno || 0) + (d.progCentro || 0);
+  return d;
+}
+function dwSetup(d){ return (d && ((d.setupTorno||0) + (d.setupCentro||0))) || 0; }
+function dwTotal(d){ return (d.tTorno||0) + (d.tCentro||0) + dwSetup(d) + (d.tProg||0); }
+window._dwNorm = _dwNorm; window.dwTotal = dwTotal; window.dwSetup = dwSetup;
 
 function dwRender(){
   const body=document.getElementById('dwBody');
@@ -9465,6 +9553,7 @@ function dwRender(){
     return true;
   });
 
+  items.forEach(_dwNorm);
   countEl.textContent=items.length+(items.length!==dwLib.length?' / '+dwLib.length:'');
 
   if(items.length===0){
@@ -9476,13 +9565,14 @@ function dwRender(){
   emptyEl.style.display='none';
 
   // Totais
-  let sumT=0,sumC=0,sumP=0;
-  items.forEach(d=>{sumT+=d.tTorno||0;sumC+=d.tCentro||0;sumP+=d.tProg||0;});
-  const sumTotal=sumT+sumC+sumP;
+  let sumT=0,sumC=0,sumP=0,sumS=0;
+  items.forEach(d=>{_dwNorm(d);sumT+=d.tTorno||0;sumC+=d.tCentro||0;sumP+=d.tProg||0;sumS+=dwSetup(d);});
+  const sumTotal=sumT+sumC+sumS+sumP;
 
+  const _idxOf = new Map(dwLib.map((x, k) => [x, k]));
   body.innerHTML=items.map((d,i)=>{
-    const idx=dwLib.indexOf(d);
-    const total=(d.tTorno||0)+(d.tCentro||0)+(d.tProg||0);
+    const idx=_idxOf.get(d);
+    const total=dwTotal(d);
     const routeClass=d.rota==='AMBOS'?'dw-route-a':d.rota.includes('TORNO')?'dw-route-t':'dw-route-c';
     const routeLabel=d.rota==='AMBOS'?'AMBOS':d.rota.includes('TORNO')?'T 2X':'C 3X';
     const cxClass=({'BAIXA':'cx-b','MEDIA':'cx-m','ALTA':'cx-a'}[(d.cx||'').toUpperCase()])||'cx-m';
@@ -9502,7 +9592,10 @@ function dwRender(){
       <td class="dw-td"><input class="dw-input dw-input-ciclo" type="number" value="${d.cicloCentro||0}" min="0" step="0.1" onchange="dwEdit(${idx},'cicloCentro',this.value)" title="Editar ciclo centro (min/peça)"></td>
       <td class="dw-td"><input class="dw-input" type="number" value="${d.tTorno||0}" min="0" onchange="dwEdit(${idx},'tTorno',this.value)" title="Editar tempo torno"></td>
       <td class="dw-td"><input class="dw-input" type="number" value="${d.tCentro||0}" min="0" onchange="dwEdit(${idx},'tCentro',this.value)" title="Editar tempo centro"></td>
-      <td class="dw-td"><input class="dw-input" type="number" value="${d.tProg||0}" min="0" onchange="dwEdit(${idx},'tProg',this.value)" title="Editar tempo programação"></td>
+      <td class="dw-td"><input class="dw-input" type="number" value="${d.setupTorno||0}" min="0" onchange="dwEdit(${idx},'setupTorno',this.value)" title="Setup do torno (min por lote)"></td>
+      <td class="dw-td"><input class="dw-input" type="number" value="${d.setupCentro||0}" min="0" onchange="dwEdit(${idx},'setupCentro',this.value)" title="Setup do centro (min por lote)"></td>
+      <td class="dw-td"><input class="dw-input" type="number" value="${d.progTorno||0}" min="0" onchange="dwEdit(${idx},'progTorno',this.value)" title="Programação do torno (min por lote)"></td>
+      <td class="dw-td"><input class="dw-input" type="number" value="${d.progCentro||0}" min="0" onchange="dwEdit(${idx},'progCentro',this.value)" title="Programação do centro (min por lote)"></td>
       <td class="dw-td"><span class="dw-total">${total>0?total+'m':'—'}</span></td>
       <td class="dw-td"><span class="cx-badge ${cxClass}" style="font-size:8px">${d.cx||'—'}</span></td>
       <td class="dw-td"><button class="dw-btn dw-btn-del" onclick="dwDelete(${idx})" title="Remover">✕</button></td>
@@ -9512,57 +9605,159 @@ function dwRender(){
   const calibCount = dwLib.filter(d => d._userEdited && ((d.tTorno||0)+(d.tCentro||0)>0)).length;
   footerEl.innerHTML=`
     <span>${items.length} desenho${items.length>1?'s':''}${calibCount>0?` · <span style="color:#10b981;font-weight:600" title="Peças calibradas (treinamento da IA)">📚 ${calibCount} calibrad${calibCount===1?'a':'as'}</span>`:''}</span>
-    <span>TORNO: <span class="dw-footer-total">${sumT}m</span> · CENTRO: <span class="dw-footer-total">${sumC}m</span> · PROG: <span class="dw-footer-total">${sumP}m</span> · <span class="dw-footer-total" style="color:var(--acc)">TOTAL: ${sumTotal}m (${(sumTotal/60).toFixed(1)}h)</span></span>
+    <span>TORNO: <span class="dw-footer-total">${sumT}m</span> · CENTRO: <span class="dw-footer-total">${sumC}m</span> · SETUP: <span class="dw-footer-total">${sumS}m</span> · PROG: <span class="dw-footer-total">${sumP}m</span> · <span class="dw-footer-total" style="color:var(--acc)">TOTAL: ${sumTotal}m (${(sumTotal/60).toFixed(1)}h)</span></span>
   `;
 
-  // Render thumbnails async
-  items.forEach((d,i)=>{
-    const idx=dwLib.indexOf(d);
-    if(d.drawingB64) dwRenderThumb(idx,d.drawingB64,d.drawingType);
-    else if(d.drawingName) dwEnsureDrawing(idx); // veio sincronizado sem bytes → busca
+  // Miniaturas: só para as linhas que aparecem na tela (ver _dwObserveThumbs)
+  _dwObserveThumbs();
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   MINIATURAS DOS DESENHOS — sob demanda
+   Antes, abrir a aba baixava do Firebase e abria no pdf.js TODOS os PDFs ao
+   mesmo tempo, só pra desenhar miniaturas de 36 px — e repetia tudo a cada
+   sincronização. Agora:
+   • só gera a miniatura da linha que entra na tela (IntersectionObserver);
+   • gera no máximo 2 por vez, dando folga pro navegador entre uma e outra;
+   • guarda a miniatura pronta em memória, então re-renderizar é instantâneo;
+   • libera o PDF da memória depois de desenhar (doc.destroy).
+   ════════════════════════════════════════════════════════════════════ */
+const _dwThumbCache = new Map();          // chave → dataURL 36×36
+let _dwThumbIO = null;
+const _dwThumbFila = [];
+let _dwThumbAtivos = 0;
+const _DW_THUMB_MAX = 2;
+
+function _dwThumbKey(d) {
+  return (d && d.req ? d.req : '') + '|' + (d && d.drawingName ? d.drawingName : '') + '|' + (d && d.drawingB64 ? d.drawingB64.length : 0);
+}
+
+function _dwObserveThumbs() {
+  const canvases = document.querySelectorAll('#dwBody canvas.dw-thumb');
+  if (!('IntersectionObserver' in window)) {
+    // navegador antigo: comportamento de antes, mas pela fila
+    canvases.forEach(c => _dwThumbPedir(parseInt(c.id.replace('dwThumb-', ''), 10)));
+    return;
+  }
+  if (_dwThumbIO) _dwThumbIO.disconnect();
+  _dwThumbIO = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (!e.isIntersecting) return;
+      _dwThumbIO.unobserve(e.target);
+      _dwThumbPedir(parseInt(e.target.id.replace('dwThumb-', ''), 10));
+    });
+  }, { rootMargin: '300px 0px' });
+  canvases.forEach(c => {
+    const idx = parseInt(c.id.replace('dwThumb-', ''), 10);
+    const d = dwLib[idx];
+    const pronta = d && _dwThumbCache.get(_dwThumbKey(d));
+    if (pronta) _dwDesenhaCache(idx, pronta);      // já temos: desenha na hora
+    else _dwThumbIO.observe(c);
   });
 }
 
+function _dwThumbPedir(idx) {
+  const d = dwLib[idx];
+  if (!d) return;
+  if (d.drawingB64) { dwRenderThumb(idx, d.drawingB64, d.drawingType); return; }
+  if (d.drawingName) dwEnsureDrawing(idx);          // busca os bytes só agora
+}
+
+function _dwDesenhaCache(idx, dataUrl) {
+  const canvas = document.getElementById('dwThumb-' + idx);
+  const ph = document.getElementById('dwThumbPh-' + idx);
+  if (!canvas) return;
+  const img = new Image();
+  img.onload = () => {
+    canvas.width = 36; canvas.height = 36;
+    canvas.getContext('2d').drawImage(img, 0, 0, 36, 36);
+    if (ph) ph.style.display = 'none';
+    canvas.style.display = 'block';
+  };
+  img.src = dataUrl;
+}
+
+function _dwThumbProximo() {
+  while (_dwThumbAtivos < _DW_THUMB_MAX && _dwThumbFila.length) {
+    const job = _dwThumbFila.shift();
+    _dwThumbAtivos++;
+    job().catch(() => {}).finally(() => {
+      _dwThumbAtivos--;
+      setTimeout(_dwThumbProximo, 16);               // um quadro de folga pra tela
+    });
+  }
+}
+
 async function dwRenderThumb(idx,b64,type){
+  const d = dwLib[idx];
+  const chave = _dwThumbKey(d);
+  const pronta = _dwThumbCache.get(chave);
+  if (pronta) { _dwDesenhaCache(idx, pronta); return; }
+
+  return new Promise(resolve => {
+    _dwThumbFila.push(async () => {
+      try { await _dwGeraThumb(idx, b64, type, chave); } finally { resolve(); }
+    });
+    _dwThumbProximo();
+  });
+}
+
+async function _dwGeraThumb(idx, b64, type, chave){
   const canvas=document.getElementById('dwThumb-'+idx);
   const ph=document.getElementById('dwThumbPh-'+idx);
-  if(!canvas)return;
+  if(!canvas)return;                                   // linha saiu da tela / re-render
   try{
     const isImg=type&&type.startsWith('image/');
     if(isImg){
-      const img=new Image();
-      img.onload=()=>{
-        const ctx=canvas.getContext('2d');
-        const s=Math.min(36/img.width,36/img.height);
-        canvas.width=36;canvas.height=36;
-        ctx.drawImage(img,0,0,36,36);
-        if(ph)ph.style.display='none';
-        canvas.style.display='block';
-      };
-      img.src='data:'+type+';base64,'+b64;
+      await new Promise(res => {
+        const img=new Image();
+        img.onload=()=>{
+          const ctx=canvas.getContext('2d');
+          canvas.width=36;canvas.height=36;
+          ctx.drawImage(img,0,0,36,36);
+          try { _dwThumbCache.set(chave, canvas.toDataURL('image/png')); } catch(e){}
+          if(ph)ph.style.display='none';
+          canvas.style.display='block';
+          res();
+        };
+        img.onerror=res;
+        img.src='data:'+type+';base64,'+b64;
+      });
       return;
     }
     await ensurePdfJs();
-    const bytes=atob(b64),arr=new Uint8Array(bytes.length);
-    for(let i=0;i<bytes.length;i++) arr[i]=bytes.charCodeAt(i);
+    // decodificação nativa do navegador (bem mais rápida que o laço com atob)
+    let arr;
+    try { arr = new Uint8Array(await (await fetch('data:application/pdf;base64,'+b64)).arrayBuffer()); }
+    catch(e) { const bytes=atob(b64); arr=new Uint8Array(bytes.length); for(let i=0;i<bytes.length;i++) arr[i]=bytes.charCodeAt(i); }
     const doc=await window.pdfjsLib.getDocument({data:arr}).promise;
-    const page=await doc.getPage(1);
-    const vp=page.getViewport({scale:1});
-    const s=Math.min(36/vp.width,36/vp.height);
-    const vp2=page.getViewport({scale:s});
-    canvas.width=36;canvas.height=36;
-    const ctx=canvas.getContext('2d');
-    ctx.fillStyle='#fff';ctx.fillRect(0,0,36,36);
-    await page.render({canvasContext:ctx,viewport:vp2}).promise;
-    if(ph)ph.style.display='none';
-    canvas.style.display='block';
+    try {
+      const page=await doc.getPage(1);
+      const vp=page.getViewport({scale:1});
+      const s=Math.min(36/vp.width,36/vp.height);
+      const vp2=page.getViewport({scale:s});
+      const alvo=document.getElementById('dwThumb-'+idx) || canvas;   // a tabela pode ter sido redesenhada
+      alvo.width=36;alvo.height=36;
+      const ctx=alvo.getContext('2d');
+      ctx.fillStyle='#fff';ctx.fillRect(0,0,36,36);
+      await page.render({canvasContext:ctx,viewport:vp2}).promise;
+      try { _dwThumbCache.set(chave, alvo.toDataURL('image/png')); } catch(e){}
+      const ph2=document.getElementById('dwThumbPh-'+idx);
+      if(ph2)ph2.style.display='none';
+      alvo.style.display='block';
+      try { page.cleanup(); } catch(e){}
+    } finally {
+      try { doc.destroy(); } catch(e){}                 // libera a memória do PDF
+    }
   }catch(e){}
 }
 
 function dwEdit(idx,field,val){
   if(idx<0||idx>=dwLib.length)return;
   const d=dwLib[idx];
+  _dwNorm(d);
   d[field]=Math.max(0,parseFloat(val)||0);
+  if (field === 'progTorno' || field === 'progCentro') d.tProg = (d.progTorno||0) + (d.progCentro||0);
   // ── Marcar como corrigido manualmente para aprendizado da IA ──
   d._userEdited=true;
   d._editedAt=new Date().toISOString();
@@ -9605,9 +9800,10 @@ function dwEdit(idx,field,val){
     if (typeof dwRender === 'function') dwRender();
     return;
   }
+  if (/^(setup|prog)(Torno|Centro)$/.test(field) && typeof stRender === 'function' && curView === 'sites') stRender();
   const row=document.querySelector(`tr[data-idx="${idx}"]`);
   if(row){
-    const t=(d.tTorno||0)+(d.tCentro||0)+(d.tProg||0);
+    const t=dwTotal(d);
     const totalEl=row.querySelector('.dw-total');
     if(totalEl) totalEl.textContent=t>0?t+'m':'—';
   }
@@ -9615,21 +9811,113 @@ function dwEdit(idx,field,val){
   console.log('[learn] Referência real salva: '+d.nome+' → T:'+d.tTorno+'m C:'+d.tCentro+'m P:'+d.tProg+'m');
 }
 
+/* ════════════════════════════════════════════════════════════════════
+   ROTA INFORMADA PELO TÉCNICO
+   Antes a IA escolhia sozinha a máquina olhando só a 1ª página do desenho.
+   Quando ela errava, calculava operações da máquina errada e o tempo saía
+   2–3× fora. Agora o técnico pode fixar a rota; ela vira regra obrigatória
+   no pedido e é imposta de novo na resposta (se a IA insistir na outra
+   máquina, aquela linha é zerada).
+   ════════════════════════════════════════════════════════════════════ */
+const ROTAS_PM = {
+  'TORNO_ROMI_2X':  'SOMENTE TORNO CNC (ROMI 2X). Centro NÃO é usado: linha [1] com ativo=false e zeros; usa_centro=false; maquina_principal="TORNO_ROMI_2X".',
+  'CENTRO_ROMI_3X': 'SOMENTE CENTRO DE USINAGEM (ROMI 3X). Torno NÃO é usado: linha [0] com ativo=false e zeros; usa_torno=false; maquina_principal="CENTRO_ROMI_3X".',
+  'AMBOS':          'TORNO + CENTRO. As linhas [0] e [1] ficam ativas, cada uma só com as operações que cabem naquela máquina; maquina_principal="AMBOS".'
+};
+
+// rota explícita > rota já fixada pelo técnico para esse REQ na biblioteca
+function _pmRotaDe(req, explicita){
+  if (explicita && ROTAS_PM[explicita]) return explicita;
+  if (!req || typeof dwLib === 'undefined') return '';
+  const dw = dwLib.find(d => d.req === req && d._rotaUser && ROTAS_PM[d.rota]);
+  return dw ? dw.rota : '';
+}
+function _pmRotaUSR(rota){
+  return rota ? '\nROTA OBRIGATÓRIA (definida pelo técnico — NÃO reavaliar a máquina, use exatamente esta): ' + ROTAS_PM[rota] : '';
+}
+
+// Garante que a resposta respeita a rota fixada
+function _pmForcaRota(r, rota){
+  if (!r || !rota || !ROTAS_PM[rota]) return r;
+  const L = Array.isArray(r.linhas) ? r.linhas : (r.linhas = []);
+  const zera = i => { if (L[i]) { L[i].ativo = false; L[i].setup_min = 0; L[i].ciclo_por_peca_min = 0; L[i].total_min = 0; L[i].operacoes = []; } };
+  if (rota === 'TORNO_ROMI_2X')  { zera(1); r.usa_torno = true;  r.usa_centro = false; r.total_centro_min = 0; }
+  if (rota === 'CENTRO_ROMI_3X') { zera(0); r.usa_torno = false; r.usa_centro = true;  r.total_torno_min = 0; }
+  if (rota === 'AMBOS')          { r.usa_torno = true; r.usa_centro = true; }
+  if (L[0] && rota !== 'CENTRO_ROMI_3X') r.total_torno_min  = +L[0].total_min || r.total_torno_min  || 0;
+  if (L[1] && rota !== 'TORNO_ROMI_2X')  r.total_centro_min = +L[1].total_min || r.total_centro_min || 0;
+  r.maquina_principal = rota;
+  r.total_geral_min = (+r.total_torno_min || 0) + (+r.total_centro_min || 0) + ((L[2] && +L[2].total_min) || 0);
+  r._rotaFixada = rota;
+  return r;
+}
+
+/* A IA devolve total_min = setup + ciclo×qtd. A partir de agora o setup
+   fica em campo próprio (setupTorno/setupCentro) e tTorno/tCentro guardam
+   só a usinagem. O TOTAL continua o mesmo; muda só a separação — e assim
+   o setup não é mais dividido junto quando o lote é planejado em partes. */
+function _pmTempos(r){
+  const L = (r && Array.isArray(r.linhas)) ? r.linhas : [];
+  const totT = +(r && r.total_torno_min) || 0, totC = +(r && r.total_centro_min) || 0;
+  const sT = Math.min(totT, (L[0] && L[0].ativo !== false) ? (+L[0].setup_min || 0) : 0);
+  const sC = Math.min(totC, (L[1] && L[1].ativo !== false) ? (+L[1].setup_min || 0) : 0);
+  return { setupT: sT, setupC: sC, usinT: totT - sT, usinC: totC - sC, prog: (L[2] && +L[2].total_min) || 0 };
+}
+function _pmGravaTempos(entry, r){
+  const t = _pmTempos(r);
+  entry.tTorno = t.usinT; entry.tCentro = t.usinC;
+  entry.setupTorno = t.setupT; entry.setupCentro = t.setupC;
+  entry.tProg = t.prog; entry.progTorno = 0; entry.progCentro = 0; entry._progSplit = false;
+  if (typeof _dwNorm === 'function') _dwNorm(entry);        // divide a programação pela rota
+  return entry;
+}
+window._pmRotaDe = _pmRotaDe; window._pmForcaRota = _pmForcaRota; window._pmTempos = _pmTempos;
+
 /* ── Gerar bloco de calibração dinâmica a partir de edições reais ── */
-function buildCalibrationBlock(){
-  // Pegar itens editados manualmente no dwLib (máx 8 mais recentes)
-  const edited=dwLib
-    .filter(d=>d._userEdited && d.nome && ((d.tTorno||0)+(d.tCentro||0)>0))
-    .sort((a,b)=>(b._editedAt||'').localeCompare(a._editedAt||''))
-    .slice(0,8);
-  if(edited.length===0) return '';
-  let lines='REFERÊNCIAS REAIS (dados corrigidos pelo operador — PRIORIDADE MÁXIMA, use como base de calibração):\n';
-  edited.forEach(d=>{
-    const total=(d.tTorno||0)+(d.tCentro||0)+(d.tProg||0);
-    const rota=(d.rota||'').replace('TORNO_ROMI_2X','Torno').replace('CENTRO_ROMI_3X','Centro').replace('AMBOS','Torno+Centro');
-    lines+=`- ${d.nome}, ${d.material||'aço'}, ${d.qtd||1}pc, ${rota} → torno:${d.tTorno||0}min, centro:${d.tCentro||0}min, prog:${d.tProg||0}min, total:${total}min\n`;
+function buildCalibrationBlock(ctx){
+  ctx = ctx || {};
+  const base = dwLib.filter(d => d._userEdited && d.nome && ((d.tTorno||0) + (d.tCentro||0) > 0));
+  if (base.length === 0) return '';
+
+  // Antes: as 8 edições MAIS RECENTES, fossem de que peça fossem.
+  // Agora: primeiro as da MESMA ROTA; entre elas, as de nome e material parecidos.
+  const STOP = new Set(['DE','DA','DO','DAS','DOS','PARA','COM','EM','SEM','TIPO','PECA','MM']);
+  const toks = t => String(t||'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+                     .split(/[^A-Z0-9]+/).filter(w => w.length >= 3 && !STOP.has(w) && !/^\d+$/.test(w));
+  const alvoTk = toks(ctx.nome);
+  const alvo = new Set(alvoTk);
+  const tipoAlvo = alvoTk[0] || '';                     // EIXO, BUCHA, PLACA...
+  const matAlvo = toks(ctx.material)[0] || '';
+  const nota = d => {
+    let n = 0;
+    if (ctx.rota && d.rota === ctx.rota) n += 100;
+    const tk = toks(d.nome);
+    if (tipoAlvo && tk[0] === tipoAlvo) n += 30;         // mesmo tipo de peça
+    n += tk.filter(w => alvo.has(w)).length * 8;          // palavras em comum
+    if (matAlvo && toks(d.material)[0] === matAlvo) n += 10;
+    if (d._rotaUser) n += 5;                              // rota confirmada pelo técnico
+    return n;
+  };
+  let pool = base;
+  if (ctx.rota) { const mesma = base.filter(d => d.rota === ctx.rota); if (mesma.length >= 3) pool = mesma; }
+  const refs = pool.map(d => ({ d, n: nota(d), t: d._editedAt || '' }))
+                   .sort((a, b) => (b.n - a.n) || b.t.localeCompare(a.t))
+                   .slice(0, 8).map(x => x.d);
+
+  const nomeRota = r => String(r||'').replace('TORNO_ROMI_2X','Torno').replace('CENTRO_ROMI_3X','Centro').replace('AMBOS','Torno+Centro');
+  let lines = 'REFERÊNCIAS REAIS (tempos corrigidos pelos técnicos — PRIORIDADE MÁXIMA, calibre por elas' + (ctx.rota ? '; mesma rota da peça atual' : '') + '):\n';
+  refs.forEach(d => {
+    if (typeof _dwNorm === 'function') _dwNorm(d);
+    const qtd = parseInt(d.qtd, 10) || 1;
+    const cT = d.cicloTorno  || (d.tTorno  ? +(d.tTorno  / qtd).toFixed(1) : 0);
+    const cC = d.cicloCentro || (d.tCentro ? +(d.tCentro / qtd).toFixed(1) : 0);
+    const partes = [];
+    if (d.tTorno  || d.setupTorno)  partes.push('torno: setup ' + (d.setupTorno||0)  + 'min + ' + cT + 'min/pç');
+    if (d.tCentro || d.setupCentro) partes.push('centro: setup ' + (d.setupCentro||0) + 'min + ' + cC + 'min/pç');
+    const prog = [d.progTorno ? 'prog torno ' + d.progTorno + 'min' : '', d.progCentro ? 'prog centro ' + d.progCentro + 'min' : ''].filter(Boolean).join(', ');
+    lines += '- ' + d.nome + ', ' + (d.material || 'aço') + ', lote ' + qtd + 'pç, ' + nomeRota(d.rota) + ' → ' + partes.join(' | ') + (prog ? ' | ' + prog : '') + '\n';
   });
-  lines+='Peças com dimensões e geometria similares DEVEM ter tempos proporcionais a estas referências.\n';
+  lines += 'Setup e programação são fixos por lote; só o tempo por peça escala com a quantidade. Peças do mesmo tipo e porte DEVEM ficar na faixa destas referências.\n';
   return lines;
 }
 
@@ -9643,13 +9931,13 @@ function dwUpdateFooter(){
     if(q){const s=(d.req+' '+d.nome+' '+d.material).toLowerCase();if(!s.includes(q))return false;}
     return true;
   });
-  let sumT=0,sumC=0,sumP=0;
-  items.forEach(d=>{sumT+=d.tTorno||0;sumC+=d.tCentro||0;sumP+=d.tProg||0;});
-  const sumTotal=sumT+sumC+sumP;
+  let sumT=0,sumC=0,sumP=0,sumS=0;
+  items.forEach(d=>{_dwNorm(d);sumT+=d.tTorno||0;sumC+=d.tCentro||0;sumP+=d.tProg||0;sumS+=dwSetup(d);});
+  const sumTotal=sumT+sumC+sumS+sumP;
   const f=document.getElementById('dwFooter');
   if(f) f.innerHTML=`
     <span>${items.length} desenho${items.length>1?'s':''}</span>
-    <span>TORNO: <span class="dw-footer-total">${sumT}m</span> · CENTRO: <span class="dw-footer-total">${sumC}m</span> · PROG: <span class="dw-footer-total">${sumP}m</span> · <span class="dw-footer-total" style="color:var(--acc)">TOTAL: ${sumTotal}m (${(sumTotal/60).toFixed(1)}h)</span></span>
+    <span>TORNO: <span class="dw-footer-total">${sumT}m</span> · CENTRO: <span class="dw-footer-total">${sumC}m</span> · SETUP: <span class="dw-footer-total">${sumS}m</span> · PROG: <span class="dw-footer-total">${sumP}m</span> · <span class="dw-footer-total" style="color:var(--acc)">TOTAL: ${sumTotal}m (${(sumTotal/60).toFixed(1)}h)</span></span>
   `;
 }
 
@@ -9723,8 +10011,10 @@ function dwExport(){
     REQ:d.req, PEÇA:d.nome, SITE:d.site, MATERIAL:d.material,
     QTD:d.qtd, ROTA:d.rota.replace('TORNO_ROMI_2X','T2X').replace('CENTRO_ROMI_3X','C3X'),
     'CICLO T/PÇ (min)':d.cicloTorno||0, 'CICLO C/PÇ (min)':d.cicloCentro||0,
-    'TORNO (min)':d.tTorno, 'CENTRO (min)':d.tCentro, 'PROG (min)':d.tProg,
-    'TOTAL (min)':(d.tTorno||0)+(d.tCentro||0)+(d.tProg||0),
+    'TORNO (min)':d.tTorno, 'CENTRO (min)':d.tCentro,
+    'SETUP TORNO (min)':(_dwNorm(d),d.setupTorno||0), 'SETUP CENTRO (min)':d.setupCentro||0,
+    'PROG TORNO (min)':d.progTorno||0, 'PROG CENTRO (min)':d.progCentro||0, 'PROG (min)':d.tProg,
+    'TOTAL (min)':dwTotal(d),
     COMPLEXIDADE:d.cx, DATA:d.savedAt?d.savedAt.substring(0,10):''
   }));
   const ws=XLSX.utils.json_to_sheet(rows);
@@ -11034,8 +11324,10 @@ function exportCSV(mode){
       'REQ':d.req||'','PEÇA':d.nome||'','SITE':d.site||'','MATERIAL':d.material||'',
       'QTD':d.qtd||0,'ROTA':(d.rota||'').replace('TORNO_ROMI_2X','T2X').replace('CENTRO_ROMI_3X','C3X'),
       'CICLO T/PÇ':d.cicloTorno||0,'CICLO C/PÇ':d.cicloCentro||0,
-      'TORNO (min)':d.tTorno||0,'CENTRO (min)':d.tCentro||0,'PROG (min)':d.tProg||0,
-      'TOTAL (min)':(d.tTorno||0)+(d.tCentro||0)+(d.tProg||0),
+      'TORNO (min)':d.tTorno||0,'CENTRO (min)':d.tCentro||0,
+      'SETUP TORNO (min)':(_dwNorm(d),d.setupTorno||0),'SETUP CENTRO (min)':d.setupCentro||0,
+      'PROG TORNO (min)':d.progTorno||0,'PROG CENTRO (min)':d.progCentro||0,'PROG (min)':d.tProg||0,
+      'TOTAL (min)':dwTotal(d),
       'COMPLEXIDADE':d.cx||'','DATA':d.savedAt?d.savedAt.substring(0,10):'',
       'EDITADO':d._userEdited?'Sim':''
     }));
@@ -11320,9 +11612,12 @@ function cfgOnFile(e){
   document.getElementById('cfgFileInfo').style.display='block';
   const r=new FileReader();
   r.onload=ev=>{
-    try{
-      cfgParseWB(new Uint8Array(ev.target.result));
-    }catch(err){toast('Erro ao ler: '+err.message,'error');}
+    const bytes=new Uint8Array(ev.target.result);
+    ensureXLSX().then(()=>{
+      try{
+        cfgParseWB(bytes);
+      }catch(err){toast('Erro ao ler: '+err.message,'error');}
+    });
   };
   r.readAsArrayBuffer(f);
 }
@@ -11407,6 +11702,7 @@ async function cfgLoadUrl(){
     }
 
     document.getElementById('cfgFileName').textContent='✓ '+url.substring(0,60);
+    await ensureXLSX();
     cfgParseWB(new Uint8Array(buf));
     toast('✓ Planilha carregada da nuvem','success');
   }catch(e){
@@ -12530,11 +12826,7 @@ function _checkAutoApprove(rec) {
   if (typeof doSort === 'function') doSort();
   if (typeof render === 'function') render();
   if (typeof window.syncSolToBacklog === 'function') window.syncSolToBacklog();
-  // Auto-email se configurado
-  try {
-    const _emcfg = _loadEmailCfg();
-    if (_emcfg.autoOnApproval) setTimeout(() => notifyEmail(rec.id), 250);
-  } catch(e) { /* config corrompida */ }
+  // E-mail automático para Compras: DESATIVADO (compras são feitas pelos relatórios exportados)
   if (typeof toast === 'function') {
     toast('✓ Material + Serviço externo preenchidos — Status atualizado para "Aprovação para compra"', 'success', 4500);
   }
@@ -13275,6 +13567,10 @@ function openD(id) {
           <input id="dMaterialSapInput" type="text" placeholder="Digite o código SAP" value="${MATERIAL_SAP_LOOKUP[(r.materialCompra||'').trim().toUpperCase()] || ''}" oninput="Sol.saveSapToMaterial('${r.id}', this.value)" style="border:none;background:transparent;font-family:var(--mono);color:#1a56db;font-weight:600;width:130px;outline:none;font-size:12px">
           <span id="dMaterialSapHint" style="font-style:italic;color:#dc2626;font-size:11px"></span>
         </div>
+        <div style="display:inline-flex;align-items:center;gap:6px;font-size:12px;background:#eff6ff;padding:4px 10px;border-radius:5px;border:1px solid #bfdbfe" title="Centro de custo informado no Forms — usado no pedido de compra">
+          <span style="color:#1e40af;font-weight:500">🏷️ CECO:</span>
+          <span style="color:#1e40af;font-weight:700;font-family:var(--mono)">${esc(r.os) || '—'}</span>
+        </div>
         <div style="display:inline-flex;align-items:center;gap:6px;font-size:12px;background:#ecfdf5;padding:4px 10px;border-radius:5px;border:1px solid #a7f3d0" title="Quantas barras/chapas comprar. Uma barra costuma render mais de uma peça, então este número não é a quantidade de peças.">
           <span style="color:#065f46;font-weight:500">📦 Qtd a comprar:</span>
           <input id="dMatQtd" type="number" min="0" step="1" placeholder="—" value="${r.matQtd != null && r.matQtd !== '' ? r.matQtd : ''}" oninput="Sol.saveMatQtd('${r.id}', this.value)" style="border:none;background:transparent;color:#065f46;font-weight:700;width:52px;outline:none;font-size:12px;font-family:inherit">
@@ -13330,15 +13626,9 @@ function openD(id) {
       <input id="dPropT" placeholder="Ex.: Fornecedor X — R$ 1.200" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px" value="${esc(r.propT)}" oninput="Sol.saveTxt('${r.id}','propT', this.value)">
       <div id="dPropTMsg" style="color:#dc2626;font-size:12px;display:none;margin-top:4px"></div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
-        <div>
-          <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;font-weight:600">Pedido de compra / Fornecedor</div>
+      <div style="margin-top:12px">
+        <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;font-weight:600">Pedido de compra / Fornecedor</div>
           <input id="dPedCompra" placeholder="Nº do pedido" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px" value="${esc(r.pedCompra)}" oninput="Sol.saveTxt('${r.id}','pedCompra', this.value)">
-        </div>
-        <div>
-          <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;font-weight:600">Pedido material / Fornecedor</div>
-          <input id="dPedMat" placeholder="Nº do pedido" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;font-family:inherit;box-sizing:border-box;margin-top:4px" value="${esc(r.pedMat)}" oninput="Sol.saveTxt('${r.id}','pedMat', this.value)">
-        </div>
       </div>
 
       <div style="font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.5px;margin-top:12px;font-weight:600">Previsão entrega Fornecedor</div>
@@ -13471,15 +13761,10 @@ function updStatus(id,st) {
   _addHistory(r, 'status', 'Status', _statusAntes, st);
   _persistRec(r);
   // ── Notificação AUTOMÁTICA por e-mail (sem confirmação — Flow envia direto) ──
-  if (st === 'Aprovação para compra' && st !== _statusAntes) {
-    try {
-      const _emcfg = _loadEmailCfg();
-      if (_emcfg.autoOnApproval) {
-        // Envia silenciosamente via Power Automate; o toast confirma sucesso/erro
-        setTimeout(() => notifyEmail(r.id), 250);
-      }
-    } catch(e) { /* config corrompida — ignora */ }
-  }
+  /* E-mail automático para Compras ao mudar para "Aprovação para compra":
+     DESATIVADO. As compras passaram a ser feitas a partir dos relatórios
+     exportados (Lista de Compras → CSV). O envio manual pelo botão
+     "📧 Notificar" do detalhe continua disponível. */
   // ── Aviso de RECUSA ao solicitante ──
   if (st === 'Rejeitado' && st !== _statusAntes) {
     try {
@@ -13742,7 +14027,7 @@ const EMAIL_CFG_DEFAULT = {
   to: 'luciano.crivellari@unilever.com',
   cc: '',
   bcc: '',
-  autoOnApproval: true,
+  autoOnApproval: false,   // desativado: as compras são feitas pelos relatórios exportados
   autoOnReject: true
 };
 function _loadEmailCfg() {
@@ -14059,10 +14344,10 @@ function openEmailCfg() {
           <div style="font-size:12px;color:#555;font-weight:600;margin-bottom:4px">Cópia oculta (BCC)</div>
           <input id="cfgEmBcc" type="text" placeholder="(opcional)" style="width:100%;padding:8px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box" value="${(cfg.bcc||'').replace(/"/g,'&quot;')}">
         </div>
-        <label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#f8fafe;border:1px solid #c8d4ed;border-radius:6px;cursor:pointer;font-size:13px;color:#244a87">
-          <input type="checkbox" id="cfgEmAuto" ${cfg.autoOnApproval?'checked':''} style="width:16px;height:16px;cursor:pointer">
-          <span>Perguntar automaticamente ao mudar status para <b>"Aprovação para compra"</b></span>
-        </label>
+        <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;font-size:13px;color:#4b5563;line-height:1.5">
+          <span>🔕</span>
+          <span>O envio automático para Compras ao aprovar uma solicitação está <b>desativado</b>. As compras são feitas pelos relatórios exportados. Para avisar alguém pontualmente, use o botão <b>📧 Notificar</b> no detalhe da solicitação.</span>
+        </div>
         <label style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;cursor:pointer;font-size:13px;color:#991b1b;margin-top:10px">
           <input type="checkbox" id="cfgEmReject" ${cfg.autoOnReject?'checked':''} style="width:16px;height:16px;cursor:pointer">
           <span>Ao mudar status para <b>"Rejeitado"</b>, perguntar o motivo e avisar o <b>solicitante</b> por e-mail</span>
@@ -14080,7 +14365,7 @@ function saveEmailCfg() {
     to: document.getElementById('cfgEmTo').value.trim(),
     cc: document.getElementById('cfgEmCc').value.trim(),
     bcc: document.getElementById('cfgEmBcc').value.trim(),
-    autoOnApproval: document.getElementById('cfgEmAuto').checked,
+    autoOnApproval: false,
     autoOnReject: !!(document.getElementById('cfgEmReject') || {}).checked
   };
   _saveEmailCfgRaw(cfg);
@@ -14342,6 +14627,7 @@ function renderList(){
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px">
             ${chip(`${urg.label}${diasTxt?' · '+diasTxt:''}`, urg.color, urg.bg, urg.bd)}
             ${chip(`📍 ${_esc(r.pl||'—')}`, PAL.text, PAL.bg, PAL.border)}
+            ${chip(`🏷️ CECO ${_esc(r.os||'—')}`, r.os ? PAL.primary : PAL.textMuted, r.os ? PAL.primaryBg : PAL.bg, r.os ? PAL.primaryBd : PAL.border)}
             <span style="font-size:11px;color:${PAL.textMuted};font-family:var(--mono);font-weight:600">#${r.id}</span>
           </div>
           <h3 style="font-size:15px;font-weight:700;color:${PAL.textBold};line-height:1.35;margin:0">${_esc(r.p||'—')}</h3>
@@ -14537,15 +14823,19 @@ function updBuy(id, key, val){
 }
 
 function exportListCSV(){
+  try { _exportListCSV(); }
+  catch (e) { console.error('[exportListCSV]', e); alert('Erro ao exportar a lista de compras:\n\n' + (e && e.message ? e.message : e)); }
+}
+function _exportListCSV(){
   const aprItems = data.filter(r => r.status === 'Aprovação para compra');
   // Uma linha por MATERIAL (não por solicitação) — se sem materiais, ainda exporta linha da solicitação
-  const rows = [['ID Solicitação','Material','Cód SAP','Qtd a comprar','Fornecedor','Peça','Qt solicitação','Planta','Área','Prioridade','Solicitante','Pedido','Cotado','Recebido','Adicionado em']];
+  const rows = [['ID Solicitação','Material','Cód SAP','Qtd a comprar','Fornecedor','Centro de custo','Peça','Qt solicitação','Planta','Área','Prioridade','Solicitante','Pedido','Cotado','Recebido','Adicionado em']];
   aprItems.forEach(r => {
-    const list = Array.isArray(r.buyList) ? r.buyList : [];
+    const list = Array.isArray(r.buyList) ? r.buyList.filter(b => b && typeof b === 'object') : [];
     if (list.length === 0) {
       // Sem materiais na buyList — mostra ainda a solicitação com material legado se houver
       rows.push([
-        r.id, r.materialCompra||'(sem material)', '', '', '', r.p||'', r.qt||'',
+        r.id, r.materialCompra||'(sem material)', '', '', '', r.os||'', r.p||'', r.qt||'',
         r.pl||'', r.ar||'', r.pr||'', r.sl||'',
         '', '', '', ''
       ]);
@@ -14556,6 +14846,7 @@ function exportListCSV(){
           r.id, b.mat||'', b.sap||'',
           (b.qt!=null?String(b.qt).replace('.',','):''),
           b.forn||'',
+          r.os||'',
           r.p||'', r.qt||'',
           r.pl||'', r.ar||'', r.pr||'', r.sl||'',
           c.pedido?'Sim':'Não', c.cotado?'Sim':'Não', c.recebido?'Sim':'Não',
@@ -14568,13 +14859,14 @@ function exportListCSV(){
     const s = String(cell==null?'':cell);
     return /[",;\n]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
   }).join(';')).join('\r\n');
-  const blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'lista-compras-' + new Date().toISOString().slice(0,10) + '.csv';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 100);
+  /* Antes: o link era clicado fora da página e o arquivo era liberado da memória
+     100 ms depois — o Edge não dava tempo de começar o download e acusava
+     "Falha – erro de rede". Agora usa o mesmo _downloadBlob da exportação Excel,
+     que coloca o link na página e só libera depois de 1,5 s. */
+  const nome = 'lista-compras-' + new Date().toISOString().slice(0,10) + '.csv';
+  const ok = _downloadBlob('\ufeff' + csv, nome, 'text/csv;charset=utf-8');
+  if (!ok) alert('Não consegui gerar o CSV. Abra o console (F12) e me mande o erro.');
+  else if (typeof toast === 'function') toast('✓ Lista de compras exportada (' + (rows.length - 1) + ' linha(s))', 'success', 2500);
 }
 
 function _esc(s){ return String(s==null?'':s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
@@ -15561,6 +15853,27 @@ window._formsInboxProcess = _formsInboxProcess;   // usado pelo diagnóstico do 
 //  e /sol_new carregar. O guard _formsInboxOn evita ligação dupla via init.)
 setTimeout(() => { try { formsInboxStart(); } catch(e){ console.warn('[formsInbox] auto-start:', e); } }, 6000);
 window.ensureXLSX = ensureXLSX;
+
+/* Funções que leem/geram Excel e eram chamadas supondo o SheetJS já carregado.
+   Se ele ainda não estiver na página, carrega e só então executa — com os
+   mesmos argumentos. Quem já usa ensureXLSX() por conta própria fica de fora. */
+(function _xlsxSobDemanda(){
+  ['custImportPT', 'custImportKSB1', 'exportHistory', 'handleImpFile', 'dwExport'].forEach(nome => {
+    const orig = window[nome];
+    if (typeof orig !== 'function' || orig._xlsxOk) return;
+    const emb = function(){
+      const self = this, args = arguments;
+      if (window.XLSX) return orig.apply(self, args);
+      if (typeof toast === 'function') toast('Carregando leitor de Excel…', 'info', 1500);
+      ensureXLSX().then(ok => {
+        if (!ok || !window.XLSX) { alert('Não consegui carregar o leitor de Excel. Verifique a conexão e tente de novo.'); return; }
+        orig.apply(self, args);
+      });
+    };
+    emb._xlsxOk = true;
+    window[nome] = emb;
+  });
+})();
 window._downloadBlob = _downloadBlob;
 window.brDateMask = brDateMask;
 window.brDateCommit = brDateCommit;
@@ -16817,6 +17130,7 @@ function _apontEnsureBundle(){
   const el = document.getElementById('apontBundle');
   if (!el) return;
   window._apontBundleOn = true;
+  try { if (typeof ensureXLSX === 'function') ensureXLSX(); } catch(e) {}   // o apontamento importa .xlsx
   try {
     const sc = document.createElement('script');
     sc.textContent = el.textContent;
@@ -19279,5 +19593,9 @@ window.M3D = (function () {
 })();
 
 </script>
+<!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
+     está mostrando a versão nova ou uma antiga em cache. -->
+<div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:#9ca3af;font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 21/09/2026 11:27</div>
 </body>
 </html>
