@@ -1700,6 +1700,8 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
 .dw-row:hover{background:var(--surface2);}
 .dw-thumb{width:36px;height:36px;border-radius:6px;object-fit:cover;cursor:pointer;border:1px solid var(--border);background:var(--surface3);transition:transform .15s;}
 .dw-thumb:hover{transform:scale(1.1);}
+.dw-open-btn{width:36px;height:36px;border-radius:6px;border:1px solid var(--border);background:var(--surface3);cursor:pointer;font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center;transition:background .15s,transform .15s;}
+.dw-open-btn:hover{background:#ede9fe;transform:scale(1.08);}
 .dw-thumb-placeholder{width:36px;height:36px;border-radius:6px;background:var(--surface3);display:flex;align-items:center;justify-content:center;font-size:8px;color:var(--tx3);font-family:var(--mono);}
 .dw-req{font-family:var(--mono);font-size:10px;font-weight:600;color:var(--vio);}
 /* Badge para peças cujos tempos foram corrigidos pelos técnicos — usado como referência pela IA */
@@ -9580,9 +9582,8 @@ function dwRender(){
 
     return`<tr class="dw-row" data-idx="${idx}">
       <td class="dw-td">${hasDrawing
-        ?`<canvas class="dw-thumb" id="dwThumb-${idx}" width="36" height="36" onclick="dwViewPdf(${idx})" title="Ver desenho"></canvas>
-           <div class="dw-thumb-placeholder" id="dwThumbPh-${idx}" style="display:flex">PDF</div>`
-        :`<div class="dw-thumb-placeholder">—</div>`}</td>
+        ?`<button class="dw-open-btn" onclick="dwViewPdf(${idx})" title="Abrir desenho${d.drawingName?': '+String(d.drawingName).replace(/"/g,'&quot;'):''}">📄</button>`
+        :`<div class="dw-thumb-placeholder" title="Sem desenho anexado">—</div>`}</td>
       <td class="dw-td"><span class="dw-req">${d.req}</span></td>
       <td class="dw-td"><span class="dw-peca" title="${d.nome}">${d.nome}</span>${d._userEdited?'<span class="dw-calib-badge" title="Tempos corrigidos pelos técnicos — usado como referência pela IA">CALIBRADO</span>':''}</td>
       <td class="dw-td"><span class="dw-mat">${d.material}</span></td>
@@ -9608,8 +9609,8 @@ function dwRender(){
     <span>TORNO: <span class="dw-footer-total">${sumT}m</span> · CENTRO: <span class="dw-footer-total">${sumC}m</span> · SETUP: <span class="dw-footer-total">${sumS}m</span> · PROG: <span class="dw-footer-total">${sumP}m</span> · <span class="dw-footer-total" style="color:var(--acc)">TOTAL: ${sumTotal}m (${(sumTotal/60).toFixed(1)}h)</span></span>
   `;
 
-  // Miniaturas: só para as linhas que aparecem na tela (ver _dwObserveThumbs)
-  _dwObserveThumbs();
+  // Sem miniaturas: nenhum desenho é baixado ou aberto ao montar a tabela.
+  // O arquivo só é carregado quando alguém clica em 📄 (dwViewPdf).
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -9995,9 +9996,25 @@ function dwClearAll(){
   }
 }
 
-function dwViewPdf(idx){
+async function dwViewPdf(idx){
   const d=dwLib[idx];
-  if(!d||!d.drawingB64)return;
+  if(!d)return;
+  if(!d.drawingB64){
+    // Desenho sincronizado só com o nome: busca o arquivo agora, sob demanda
+    if(!d.drawingName && !d.req){ toast('Este item não tem desenho anexado','info'); return; }
+    toast('Abrindo desenho…','info',1500);
+    try{
+      let rec = (typeof idbLoadDrawing==='function') ? await idbLoadDrawing('dw_' + d.req) : null;
+      if(!rec || !rec.b64) rec = (typeof fbLoadDrawing==='function') ? await fbLoadDrawing('dw_' + d.req) : null;
+      if(rec && rec.b64){
+        d.drawingB64 = rec.b64;
+        d.drawingType = d.drawingType || rec.type || 'application/pdf';
+        d.drawingName = d.drawingName || rec.name || null;
+        try{ idbSaveDrawing('dw_' + d.req, rec.b64, d.drawingName, d.drawingType); }catch(e){}
+      }
+    }catch(e){ console.warn('[dwViewPdf]', e && e.message || e); }
+    if(!d.drawingB64){ toast('Não encontrei o arquivo deste desenho','error'); return; }
+  }
   // Reutilizar o viewer existente
   pmB64=d.drawingB64;
   pmName=d.drawingName||d.nome;
@@ -19596,6 +19613,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:#9ca3af;font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 21/09/2026 11:27</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:#9ca3af;font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 21/09/2026 11:37</div>
 </body>
 </html>
