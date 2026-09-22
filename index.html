@@ -2620,13 +2620,394 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
           </button>
         </div>
         <script>
+/* ══ Blocos do APONTAMENTO carregados primeiro ══
+   Ficavam no fim do arquivo. Se qualquer outra parte do app desse erro
+   durante a carga, o navegador parava ali e estas funções nunca eram
+   registradas — o apontamento voltava ao comportamento antigo (sem
+   editar, sem excluir, com "agora" no lugar da hora). No começo, elas
+   sempre existem. */
+/* ════════════════════════════════════════════════════════════════════
+   EDITAR E EXCLUIR APONTAMENTOS
+   Os ícones ✏️ e 🗑️ do histórico eram só desenho — não faziam nada.
+   Agora editam e apagam de verdade, direto em /apont_registros, e a
+   mudança aparece para todo mundo. Registros antigos (o histórico que
+   veio junto com o app) não têm id e continuam só de leitura.
+   ════════════════════════════════════════════════════════════════════ */
+function __apontHora(r){
+  if (!r || !r.criadoEm) return 'agora';
+  const d = new Date(r.criadoEm);
+  const p = n => String(n).padStart(2, '0');
+  return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function __apontAcoes(R, w, id, IconeEdit, IconeLixo){
+  const h = R.createElement;
+  if (!id) return h('span', { className: 'flex gap-3', title: 'Registro histórico — não editável' },
+    h(IconeEdit, { className: 'h-3.5 w-3.5', style: { color: '#60A5FA', opacity: .25 } }),
+    h(IconeLixo, { className: 'h-3.5 w-3.5', style: { color: w.vermelho, opacity: .25 } }));
+  return h('span', { className: 'flex gap-3' },
+    h(IconeEdit, { className: 'h-3.5 w-3.5 cursor-pointer', style: { color: '#60A5FA' }, title: 'Editar', onClick: () => window.__apontEditaRegistro(id) }),
+    h(IconeLixo, { className: 'h-3.5 w-3.5 cursor-pointer', style: { color: w.vermelho }, title: 'Excluir', onClick: () => window.__apontApagaRegistro(id) }));
+}
+window.__apontHora = __apontHora;
+window.__apontAcoes = __apontAcoes;
+
+// caixa simples com campos (não usa o confirm/prompt do navegador, que pode ser bloqueado)
+function __apontFormulario(titulo, campos, aoSalvar, textoOk, corOk){
+  const velho = document.getElementById('apontFormOv'); if (velho) velho.remove();
+  const esc = t => String(t == null ? '' : t).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+  const ov = document.createElement('div');
+  ov.id = 'apontFormOv';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100040;display:flex;align-items:center;justify-content:center;padding:20px;font-family:Segoe UI,system-ui,sans-serif';
+  ov.innerHTML =
+    '<div style="background:#141414;border:1px solid #262626;border-radius:12px;max-width:460px;width:100%;max-height:88vh;overflow:auto;color:#F4F4F5">'
+    + '<div style="padding:14px 18px;border-bottom:1px solid #262626;font-size:14px;font-weight:800">' + esc(titulo) + '</div>'
+    + '<div style="padding:16px 18px;display:grid;gap:10px">'
+    + campos.map(c => '<label style="display:block;font-size:11px;color:#8A8A93;font-weight:700;text-transform:uppercase;letter-spacing:.4px">' + esc(c.rotulo)
+        + (c.lista ? '<datalist id="dl_' + c.id + '">' + c.lista.map(o => '<option value="' + esc(o) + '">').join('') + '</datalist>' : '')
+        + '<input id="af_' + c.id + '" value="' + esc(c.valor) + '"' + (c.lista ? ' list="dl_' + c.id + '"' : '') + (c.tipo === 'number' ? ' type="number" min="0"' : '')
+        + ' style="width:100%;margin-top:4px;padding:8px 10px;border-radius:7px;border:1px solid #262626;background:#0C0C0C;color:#F4F4F5;font-size:13px;font-family:inherit;box-sizing:border-box;color-scheme:dark"></label>').join('')
+    + '</div>'
+    + '<div style="padding:12px 18px;border-top:1px solid #262626;display:flex;justify-content:flex-end;gap:8px">'
+    + '<button id="afNao" style="background:transparent;border:1px solid #3a3a3a;color:#F4F4F5;padding:8px 16px;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">Cancelar</button>'
+    + '<button id="afSim" style="background:' + (corOk || '#10B981') + ';border:none;color:#0C0C0C;padding:8px 18px;border-radius:7px;font-size:13px;font-weight:800;cursor:pointer">' + esc(textoOk || 'Salvar') + '</button>'
+    + '</div></div>';
+  document.body.appendChild(ov);
+  const fecha = () => { document.removeEventListener('keydown', tecla); ov.remove(); };
+  const tecla = e => { if (e.key === 'Escape') { e.preventDefault(); fecha(); } };
+  document.addEventListener('keydown', tecla);
+  ov.onclick = e => { if (e.target === ov) fecha(); };
+  ov.querySelector('#afNao').onclick = fecha;
+  ov.querySelector('#afSim').onclick = () => {
+    const vals = {};
+    campos.forEach(c => { const el = document.getElementById('af_' + c.id); vals[c.id] = el ? el.value : c.valor; });
+    fecha(); aoSalvar(vals);
+  };
+  const p = ov.querySelector('input'); if (p) setTimeout(() => p.focus(), 30);
+}
+
+window.__apontEditaRegistro = function(id){
+  const reg = (window.__apontRegsLista || []).find(r => r._id === id);
+  if (!reg) { alert('Registro não encontrado.'); return; }
+  const distintos = campo => [...new Set((window.__apontRegsLista || []).map(r => r[campo]).filter(Boolean))].slice(0, 40);
+  const perda = reg.tipo_registro === 'perda';
+  const campos = perda
+    ? [{ id: 'data', rotulo: 'Data (dd/mm/aaaa)', valor: reg.data || '' },
+       { id: 'fabrica', rotulo: 'Fábrica', valor: reg.fabrica || '', lista: distintos('fabrica') },
+       { id: 'motivo', rotulo: 'Motivo da perda', valor: reg.motivo || '', lista: distintos('motivo') },
+       { id: 'forms', rotulo: 'Nº Forms (opcional)', valor: reg.forms || '' },
+       { id: 'minutos', rotulo: 'Tempo (min)', valor: reg.minutos || '', tipo: 'number' },
+       { id: 'obs', rotulo: 'Observações', valor: reg.obs || '' }]
+    : [{ id: 'data', rotulo: 'Data (dd/mm/aaaa)', valor: reg.data || '' },
+       { id: 'fabrica', rotulo: 'Fábrica', valor: reg.fabrica || '', lista: distintos('fabrica') },
+       { id: 'forms', rotulo: 'Nº Forms', valor: reg.forms || '' },
+       { id: 'tipo', rotulo: 'Atividade', valor: reg.tipo || '', lista: distintos('tipo') },
+       { id: 'pecas', rotulo: 'Peças produzidas', valor: reg.pecas || '', tipo: 'number' },
+       { id: 'minutos', rotulo: 'Tempo (min)', valor: reg.minutos || '', tipo: 'number' },
+       { id: 'obs', rotulo: 'Observações', valor: reg.obs || '' }];
+  __apontFormulario('Editar apontamento — ' + (reg.operador || ''), campos, vals => {
+    const novo = Object.assign({}, reg, vals, { editadoEm: Date.now() });
+    window.__apontGravaRegistro(novo);
+  });
+};
+
+window.__apontApagaRegistro = function(id){
+  const reg = (window.__apontRegsLista || []).find(r => r._id === id);
+  if (!reg) return;
+  __apontFormulario('Excluir este apontamento?',
+    [{ id: 'conf', rotulo: 'Para confirmar, digite EXCLUIR', valor: '' }],
+    vals => {
+      if (String(vals.conf || '').trim().toUpperCase() !== 'EXCLUIR') { alert('Exclusão cancelada — o texto não confere.'); return; }
+      window.__apontRemoveRegistro(id);
+    }, 'Excluir', '#F43F5E');
+};
+
+/* ════════════════════════════════════════════════════════════════════
+   APONTAMENTOS DOS TÉCNICOS — compartilhados
+   Antes, o que o técnico apontava no Registro de Produção ficava só na
+   memória da aba: sumia ao recarregar e ninguém mais via. Agora cada
+   apontamento vira um item em /apont_registros no Firebase (um por
+   registro, só acrescenta — ninguém sobrescreve ninguém) e todos veem.
+   Sem internet: fica numa fila neste navegador e sobe quando conectar.
+   ════════════════════════════════════════════════════════════════════ */
+(function apontRegistrosCompartilhados(){
+  const CAMINHO = '/apont_registros';
+  const FILA = 'apont_regs_pendentes_v1';
+  const CACHE = 'apont_regs_cache_v1';
+  let remotos = [];
+  try { remotos = JSON.parse(localStorage.getItem(CACHE) || '[]') || []; } catch (e) {}
+  const fila = () => { try { return JSON.parse(localStorage.getItem(FILA) || '[]') || []; } catch (e) { return []; } };
+  const setFila = f => { try { Storage.prototype.setItem.call(localStorage, FILA, JSON.stringify(f)); } catch (e) {} };
+
+  function publica(){
+    const ids = new Set(remotos.map(r => r._id));
+    const pend = fila().filter(r => !ids.has(r._id));
+    window.__apontRegsLista = pend.concat(remotos);
+    window.dispatchEvent(new Event('apont-regs-remoto'));
+  }
+  const pronto = () => typeof FB !== 'undefined' && FB.db && (!FB.isConnected || FB.isConnected());
+  function envia(reg){
+    if (!pronto()) return false;
+    try { FB.db.ref(CAMINHO + '/' + reg._id).set(reg); return true; } catch (e) { return false; }
+  }
+  function esvaziaFila(){
+    if (!pronto()) return;
+    const f = fila(); if (!f.length) return;
+    f.forEach(envia);                    // reenviar o mesmo _id é inofensivo (sobrescreve igual)
+  }
+  function limpaConfirmados(){
+    const ids = new Set(remotos.map(r => r._id));
+    const f = fila(), sobrou = f.filter(r => !ids.has(r._id));
+    if (sobrou.length !== f.length) setFila(sobrou);
+  }
+
+  window.__apontSalvaRegistro = function(d){
+    const reg = Object.assign({}, d, {
+      _id: Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+      criadoEm: Date.now()
+    });
+    /* O registro fica na fila local até o Firebase devolver o eco dele. Assim
+       ele aparece na hora para quem apontou (mesmo sem internet) e sai da fila
+       sozinho quando confirma — sem sumir da tela e sem aparecer duas vezes. */
+    const f = fila(); f.unshift(reg); setFila(f);
+    envia(reg);
+    publica();
+    return reg;
+  };
+
+  // altera um apontamento existente (edição)
+  window.__apontGravaRegistro = function(reg){
+    if (!reg || !reg._id) return;
+    remotos = remotos.map(r => r._id === reg._id ? reg : r);
+    const f = fila().map(r => r._id === reg._id ? reg : r);
+    if (!f.some(r => r._id === reg._id) && !pronto()) f.unshift(reg);
+    setFila(f);
+    envia(reg);
+    publica();
+  };
+  // exclui de vez
+  window.__apontRemoveRegistro = function(id){
+    remotos = remotos.filter(r => r._id !== id);
+    setFila(fila().filter(r => r._id !== id));
+    try { if (pronto()) FB.db.ref(CAMINHO + '/' + id).remove(); } catch (e) { console.warn('[apont] remover:', e); }
+    publica();
+  };
+
+  window.__apontRegsLista = fila().concat(remotos);
+  let tent = 0;
+  const iv = setInterval(() => {
+    tent++;
+    if (pronto()) {
+      clearInterval(iv);
+      esvaziaFila();
+      FB.db.ref(CAMINHO).orderByKey().limitToLast(4000).on('value', snap => {
+        const v = snap.val() || {};
+        remotos = Object.keys(v).map(k => Object.assign({ _id: k }, v[k]))
+                        .sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
+        try { Storage.prototype.setItem.call(localStorage, CACHE, JSON.stringify(remotos.slice(0, 1500))); } catch (e) {}
+        limpaConfirmados();
+        esvaziaFila();
+        publica();
+      }, err => console.warn('[apont] escuta dos apontamentos falhou:', err && err.message));
+      console.log('[apont] apontamentos compartilhados ligados');
+    } else if (tent > 240) clearInterval(iv);
+  }, 500);
+})();
+
+/* ════════════════════════════════════════════════════════════════════
+   PLANEJADO × APONTADO (programação)
+   Para o dia escolhido, cruza por turno e máquina o que foi programado
+   (requisições e perdas planejadas) com o que os técnicos apontaram.
+   • Aderência ao plano = min apontados nas requisições planejadas ÷ min planejados
+   • Tempo produtivo    = min de produção apontados ÷ capacidade do card
+   Apontamento de requisição que não estava no plano aparece como EXTRA.
+   ════════════════════════════════════════════════════════════════════ */
+function __apontComparativo(R, w, ctx){
+  const h = R.createElement;
+  const dia = ctx.dia, agenda = ctx.agenda || {}, reqs = ctx.reqs || [], ops = ctx.ops || [];
+  const regs = (window.__apontRegsLista || []).filter(r => String(r.data || '').trim() === dia);
+  const normRef = x => String(x == null ? '' : x).toUpperCase().replace(/^#/, '').replace(/^F-?/, '').replace(/\s+/g, '').trim();
+  const baseRef = x => { const m = normRef(x).match(/^(\d+)/); return m ? m[1] : normRef(x); };
+  const turnoDe = nome => { const o = ops.find(x => x.nome === nome); return o ? String(o.turno) : ''; };
+  const catDe = nome => { const o = ops.find(x => x.nome === nome); return o ? o.cat : ''; };
+  const maqDe = r => { const m = String(r.maquina || '').toUpperCase(); return m.includes('CENTRO') ? 'CENTRO' : m.includes('TORNO') ? 'TORNO' : (catDe(r.operador) === 'CENTRO' ? 'CENTRO' : 'TORNO'); };
+  const nOps = (maq, t) => ops.filter(o => o.cat === maq && String(o.turno) === String(t)).length;
+  const cap = (maq, t) => nOps(maq, t) * 385;
+  const pct = (a, b) => b > 0 ? Math.round(a / b * 100) : null;
+  const corPct = p => p == null ? w.suave : p >= 85 ? w.verde : p >= 60 ? w.ambar : w.vermelho;
+  const reqDe = ref => reqs.find(q => String(q.ref) === String(ref)) || {};
+  const perdaRot = ref => { try { return (window.__perdaInfoPub ? window.__perdaInfoPub(ref) : null) || { rotulo: String(ref).split('|')[1], icone: '⏸️' }; } catch (e) { return { rotulo: ref, icone: '⏸️' }; } };
+
+  const blocos = [];
+  let totPlan = 0, totReal = 0, totProd = 0, totCap = 0;
+
+  ctx.turnos.forEach(t => {
+    ['TORNO', 'CENTRO'].forEach(maq => {
+      const plano = agenda[dia + '|' + t + '|' + maq] || [];
+      const meus = regs.filter(r => turnoDe(r.operador) === String(t) && maqDe(r) === maq);
+      if (!plano.length && !meus.length) return;
+
+      const prod = meus.filter(r => r.tipo_registro !== 'perda');
+      const perdas = meus.filter(r => r.tipo_registro === 'perda');
+      const linhas = [], usados = new Set();
+      let plan = 0, real = 0;
+
+      plano.filter(x => !String(x.ref).startsWith('PERDA|')).forEach(x => {
+        const ap = prod.filter(r => normRef(r.forms) === normRef(x.ref) || baseRef(r.forms) === baseRef(x.ref));
+        ap.forEach(r => usados.add(r));
+        const min = ap.reduce((s, r) => s + (Number(r.minutos) || 0), 0);
+        const pcs = ap.reduce((s, r) => s + (Number(r.pecas) || 0), 0);
+        plan += Number(x.min) || 0; real += min;
+        linhas.push({ ref: '#' + x.ref, desc: reqDe(x.ref).peca || '', plan: Number(x.min) || 0, real: min, pcs, tipo: 'plano' });
+      });
+      const extras = {};
+      prod.filter(r => !usados.has(r)).forEach(r => {
+        const k = normRef(r.forms) || '(sem nº)';
+        extras[k] = extras[k] || { real: 0, pcs: 0 };
+        extras[k].real += Number(r.minutos) || 0; extras[k].pcs += Number(r.pecas) || 0;
+      });
+      Object.keys(extras).forEach(k => linhas.push({ ref: '#' + k, desc: '', plan: 0, real: extras[k].real, pcs: extras[k].pcs, tipo: 'extra' }));
+
+      const perdaPlan = plano.filter(x => String(x.ref).startsWith('PERDA|'));
+      const pPlan = perdaPlan.reduce((s, x) => s + (Number(x.min) || 0), 0);
+      const pReal = perdas.reduce((s, r) => s + (Number(r.minutos) || 0), 0);
+      if (perdaPlan.length || perdas.length) {
+        const motivos = {};
+        perdas.forEach(r => { const m = String(r.motivo || 'OUTROS').toUpperCase(); motivos[m] = (motivos[m] || 0) + (Number(r.minutos) || 0); });
+        linhas.push({ ref: 'PERDAS', desc: Object.keys(motivos).map(m => m + ' (' + motivos[m] + 'M)').join(' | ') ||
+                      perdaPlan.map(x => perdaRot(x.ref).rotulo).join(', '), plan: pPlan, real: pReal, pcs: null, tipo: 'perda' });
+      }
+
+      const prodMin = prod.reduce((s, r) => s + (Number(r.minutos) || 0), 0);
+      const c = cap(maq, t);
+      totPlan += plan; totReal += real; totProd += prodMin; totCap += c;
+      blocos.push({ t, maq, linhas, plan, real, prodMin, c, aderencia: pct(real, plan), produtivo: pct(prodMin, c), pPlan, pReal });
+    });
+  });
+
+  const kpi = (rot, val, cor, dica) => h('div', { title: dica || '', className: 'rounded-lg px-3 py-2', style: { background: w.carta, border: '1px solid ' + w.linha, minWidth: 130 } },
+    h('p', { className: 'text-[10px] font-bold uppercase', style: { color: w.suave, letterSpacing: '.5px' } }, rot),
+    h('p', { className: 'text-[18px] font-black', style: { color: cor } }, val));
+
+  const cab = h('div', { className: 'mb-3 flex flex-wrap items-center justify-between gap-3' },
+    h('div', null,
+      h('p', { className: 'text-[14px] font-black', style: { color: w.texto } }, 'Planejado × Apontado'),
+      h('p', { className: 'text-[11px]', style: { color: w.suave } }, dia + ' · ' + regs.length + ' apontamento(s) no dia')),
+    h('div', { className: 'flex flex-wrap gap-2' },
+      kpi('Aderência ao plano', totPlan ? pct(totReal, totPlan) + '%' : '—', corPct(pct(totReal, totPlan)), 'Minutos apontados nas requisições planejadas ÷ minutos planejados'),
+      kpi('Tempo produtivo', totCap ? pct(totProd, totCap) + '%' : '—', corPct(pct(totProd, totCap)), 'Minutos de produção apontados ÷ capacidade dos turnos')));
+
+  if (!blocos.length) {
+    return h('div', { className: 'rounded-xl p-4', style: { background: w.painel, border: '1px solid ' + w.linha } }, cab,
+      h('p', { className: 'py-6 text-center text-[12px]', style: { color: w.suave } }, 'Nada planejado nem apontado neste dia.'));
+  }
+
+  const col = (txt, st) => h('span', { style: Object.assign({ fontSize: 12 }, st || {}) }, txt);
+  const linha = (l, i) => {
+    const extra = l.tipo === 'extra', perda = l.tipo === 'perda';
+    const cor = perda ? w.vermelho : extra ? w.laranja : w.texto;
+    const ok = !extra && !perda && l.plan > 0 ? pct(l.real, l.plan) : null;
+    return h('div', { key: i, className: 'grid items-center gap-2 rounded-md px-3 py-2',
+      style: { gridTemplateColumns: '90px 70px 80px 1fr 60px', background: perda ? '#2a1418' : extra ? '#2a1d12' : w.carta,
+               borderLeft: '3px solid ' + (perda ? w.vermelho : extra ? w.laranja : (ok == null ? w.linha : corPct(ok))) } },
+      col(l.ref, { color: cor, fontWeight: 700, fontFamily: 'monospace' }),
+      col(l.plan + ' min', { color: w.suave }),
+      col(l.real + ' min', { color: perda ? w.vermelho : extra ? w.laranja : corPct(ok), fontWeight: 700 }),
+      extra ? h('span', null, h('span', { className: 'rounded-full px-2 py-0.5 text-[9.5px] font-bold', style: { border: '1px solid ' + w.laranja, color: w.laranja } }, 'EXTRA / NÃO PLANEJADO'))
+            : col((ok != null ? ok + '% · ' : '') + (l.desc || ''), { color: perda ? w.vermelho : w.suave, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: perda ? 'uppercase' : 'none', fontSize: perda ? 10.5 : 12 }),
+      col(l.pcs == null ? '' : l.pcs + ' pç', { color: w.texto, fontWeight: 700, textAlign: 'right' }));
+  };
+
+  return h('div', { className: 'rounded-xl p-4', style: { background: w.painel, border: '1px solid ' + w.linha } }, cab,
+    blocos.map((b, i) => h('div', { key: i, className: 'mb-3 rounded-lg p-3', style: { background: w.fundo, border: '1px solid ' + w.linha } },
+      h('div', { className: 'mb-2 flex flex-wrap items-center justify-between gap-2' },
+        h('p', { className: 'text-[12px] font-black', style: { color: b.maq === 'TORNO' ? w.ciano : w.roxo } }, b.t + 'º turno · ' + (b.maq === 'TORNO' ? 'Torno' : 'Centro')),
+        h('p', { className: 'text-[11px]', style: { color: w.suave } },
+          'plano ' + b.plan + ' min · apontado no plano ' + b.real + ' min · ',
+          h('b', { style: { color: corPct(b.aderencia) } }, b.aderencia == null ? 'sem plano' : b.aderencia + '% aderência'),
+          ' · ',
+          h('b', { style: { color: corPct(b.produtivo) } }, b.produtivo == null ? '—' : b.produtivo + '% produtivo'))),
+      h('div', { className: 'mb-1 grid gap-2 px-3 text-[9.5px] font-bold uppercase', style: { gridTemplateColumns: '90px 70px 80px 1fr 60px', color: w.suave, letterSpacing: '.5px' } },
+        h('span', null, 'Nº'), h('span', null, 'Plano'), h('span', null, 'Apontado'), h('span', null, 'Situação'), h('span', { style: { textAlign: 'right' } }, 'Peças')),
+      h('div', { className: 'space-y-1' }, b.linhas.map(linha)))));
+}
+window.__apontComparativo = __apontComparativo;
+
+/* ════════════════════════════════════════════════════════════════════
+   PERDAS PLANEJADAS — programação do apontamento
+   Blocos arrastáveis (limpeza, manutenção, treinamento…) que ocupam minutos
+   da capacidade do turno/máquina, igual a uma requisição. Ficam na mesma
+   agenda da programação, com ref "PERDA|<tipo>", então são salvos e
+   sincronizados junto. Não entram em cascata para o turno seguinte e não
+   aparecem na lista de requisições do técnico.
+   ════════════════════════════════════════════════════════════════════ */
+const PERDAS_PLANEJADAS = [
+  { id: 'limpeza',     rotulo: 'Limpeza / 5S',          icone: '🧹', min: 30, cor: '#38bdf8' },
+  { id: 'manutencao',  rotulo: 'Manutenção da máquina', icone: '🔧', min: 60, cor: '#f59e0b' },
+  { id: 'treinamento', rotulo: 'Treinamento',           icone: '🎓', min: 60, cor: '#a78bfa' },
+  { id: 'reuniao',     rotulo: 'Reunião / DDS',         icone: '🗣️', min: 15, cor: '#34d399' },
+  { id: 'refeicao',    rotulo: 'Pausa extra',           icone: '☕', min: 15, cor: '#f472b6' },
+  { id: 'outros',      rotulo: 'Outras perdas',         icone: '⏸️', min: 30, cor: '#94a3b8' }
+];
+function __perdaInfo(ref){
+  const id = String(ref || '').split('|')[1] || 'outros';
+  return PERDAS_PLANEJADAS.find(p => p.id === id) || { id, rotulo: id, icone: '⏸️', min: 30, cor: '#94a3b8' };
+}
+function __perdaMin(ref){ return __perdaInfo(ref).min; }
+
+// Painel com os blocos para arrastar (desenhado dentro do React do apontamento)
+function __perdasPaleta(R, w, setArrasto){
+  const h = R.createElement;
+  return h('div', { className: 'mb-4 rounded-lg p-3', style: { background: w.carta, border: '1px solid ' + w.linha } },
+    h('div', { className: 'mb-2 flex items-center justify-between' },
+      h('p', { className: 'text-[12px] font-black', style: { color: w.texto } }, 'Perdas planejadas'),
+      h('span', { className: 'text-[9.5px]', style: { color: w.suave } }, 'arraste para um turno')),
+    h('div', { className: 'flex flex-wrap gap-1.5' },
+      PERDAS_PLANEJADAS.map(p => h('div', {
+        key: p.id,
+        draggable: true,
+        onDragStart: ev => { try { ev.dataTransfer.setData('text/plain', 'PERDA|' + p.id); } catch (e) {} setArrasto('PERDA|' + p.id); },
+        onDragEnd: () => setArrasto(null),
+        title: p.rotulo + ' — ' + p.min + ' min (ajuste depois de soltar)',
+        className: 'rounded-md px-2 py-1 text-[10.5px] font-semibold',
+        style: { background: p.cor + '1f', border: '1px solid ' + p.cor + '66', color: p.cor, cursor: 'grab', userSelect: 'none' }
+      }, p.icone + ' ' + p.rotulo, h('span', { style: { opacity: .7, fontWeight: 400 } }, ' · ' + p.min + 'm'))))
+  );
+}
+
+// Como a perda aparece dentro do turno
+function __perdaItem(R, w, item, acoes){
+  const h = R.createElement, p = __perdaInfo(item.ref);
+  return h('div', { key: item.ref, className: 'rounded-lg px-2.5 py-1.5',
+                    style: { background: p.cor + '14', border: '1px dashed ' + p.cor + '80' } },
+    h('div', { className: 'flex items-center justify-between gap-2' },
+      h('span', { className: 'min-w-0 truncate text-[11px] font-semibold', style: { color: p.cor } }, p.icone + ' ' + p.rotulo),
+      h('button', { onClick: acoes.tirar, title: 'Tirar', style: { color: w.suave, background: 'transparent', border: 'none', cursor: 'pointer' } }, '✕')),
+    h('div', { className: 'mt-1 flex items-center gap-1.5' },
+      h('input', { type: 'number', min: '0', value: item.min,
+                   onChange: ev => acoes.mudar(ev.target.value),
+                   className: 'rounded px-1.5 py-1 text-[11px]',
+                   style: { width: 62, background: w.painel, color: w.texto, border: '1px solid ' + w.linha, colorScheme: 'dark' } }),
+      h('span', { className: 'text-[9.5px]', style: { color: w.suave } }, 'min · perda planejada'))
+  );
+}
+window.__perdaMin = __perdaMin;
+window.__perdaInfoPub = __perdaInfo;
+window.__perdasPaleta = __perdasPaleta;
+window.__perdaItem = __perdaItem;
+
           /* ?adm=1 na URL revela as ferramentas de manutenção */
           (function(){
             if (!/[?&]adm=1/.test(location.search)) return;
             const el = document.getElementById('tbMoreAdm');
             if (el) el.style.display = '';
           })();
-        </script>
+        
+/* Sinal de que o script principal rodou até o fim. Se a marca de versão no
+   canto da tela NÃO mostrar "ok", algo deu erro no meio da carga — veja o
+   console (F12). */
+(function(){function _marca(){try{var _mv=document.getElementById('appVersao');if(_mv&&_mv.textContent.indexOf('ok')<0)_mv.textContent+=' · ok';console.log('[app] script principal carregado até o fim —',_mv?_mv.textContent:'');}catch(e){}}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',_marca);else _marca();})();
+</script>
       </div>
     </div>
     <!-- Mobile: botão menu -->
@@ -17432,374 +17813,7 @@ window.__apontLiderEmergencia = __apontLiderEmergencia;
   }, 500);
 })();
 
-/* ════════════════════════════════════════════════════════════════════
-   EDITAR E EXCLUIR APONTAMENTOS
-   Os ícones ✏️ e 🗑️ do histórico eram só desenho — não faziam nada.
-   Agora editam e apagam de verdade, direto em /apont_registros, e a
-   mudança aparece para todo mundo. Registros antigos (o histórico que
-   veio junto com o app) não têm id e continuam só de leitura.
-   ════════════════════════════════════════════════════════════════════ */
-function __apontHora(r){
-  if (!r || !r.criadoEm) return 'agora';
-  const d = new Date(r.criadoEm);
-  const p = n => String(n).padStart(2, '0');
-  return p(d.getDate()) + '/' + p(d.getMonth() + 1) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
-}
-function __apontAcoes(R, w, id, IconeEdit, IconeLixo){
-  const h = R.createElement;
-  if (!id) return h('span', { className: 'flex gap-3', title: 'Registro histórico — não editável' },
-    h(IconeEdit, { className: 'h-3.5 w-3.5', style: { color: '#60A5FA', opacity: .25 } }),
-    h(IconeLixo, { className: 'h-3.5 w-3.5', style: { color: w.vermelho, opacity: .25 } }));
-  return h('span', { className: 'flex gap-3' },
-    h(IconeEdit, { className: 'h-3.5 w-3.5 cursor-pointer', style: { color: '#60A5FA' }, title: 'Editar', onClick: () => window.__apontEditaRegistro(id) }),
-    h(IconeLixo, { className: 'h-3.5 w-3.5 cursor-pointer', style: { color: w.vermelho }, title: 'Excluir', onClick: () => window.__apontApagaRegistro(id) }));
-}
-window.__apontHora = __apontHora;
-window.__apontAcoes = __apontAcoes;
 
-// caixa simples com campos (não usa o confirm/prompt do navegador, que pode ser bloqueado)
-function __apontFormulario(titulo, campos, aoSalvar, textoOk, corOk){
-  const velho = document.getElementById('apontFormOv'); if (velho) velho.remove();
-  const esc = t => String(t == null ? '' : t).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
-  const ov = document.createElement('div');
-  ov.id = 'apontFormOv';
-  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100040;display:flex;align-items:center;justify-content:center;padding:20px;font-family:Segoe UI,system-ui,sans-serif';
-  ov.innerHTML =
-    '<div style="background:#141414;border:1px solid #262626;border-radius:12px;max-width:460px;width:100%;max-height:88vh;overflow:auto;color:#F4F4F5">'
-    + '<div style="padding:14px 18px;border-bottom:1px solid #262626;font-size:14px;font-weight:800">' + esc(titulo) + '</div>'
-    + '<div style="padding:16px 18px;display:grid;gap:10px">'
-    + campos.map(c => '<label style="display:block;font-size:11px;color:#8A8A93;font-weight:700;text-transform:uppercase;letter-spacing:.4px">' + esc(c.rotulo)
-        + (c.lista ? '<datalist id="dl_' + c.id + '">' + c.lista.map(o => '<option value="' + esc(o) + '">').join('') + '</datalist>' : '')
-        + '<input id="af_' + c.id + '" value="' + esc(c.valor) + '"' + (c.lista ? ' list="dl_' + c.id + '"' : '') + (c.tipo === 'number' ? ' type="number" min="0"' : '')
-        + ' style="width:100%;margin-top:4px;padding:8px 10px;border-radius:7px;border:1px solid #262626;background:#0C0C0C;color:#F4F4F5;font-size:13px;font-family:inherit;box-sizing:border-box;color-scheme:dark"></label>').join('')
-    + '</div>'
-    + '<div style="padding:12px 18px;border-top:1px solid #262626;display:flex;justify-content:flex-end;gap:8px">'
-    + '<button id="afNao" style="background:transparent;border:1px solid #3a3a3a;color:#F4F4F5;padding:8px 16px;border-radius:7px;font-size:13px;font-weight:700;cursor:pointer">Cancelar</button>'
-    + '<button id="afSim" style="background:' + (corOk || '#10B981') + ';border:none;color:#0C0C0C;padding:8px 18px;border-radius:7px;font-size:13px;font-weight:800;cursor:pointer">' + esc(textoOk || 'Salvar') + '</button>'
-    + '</div></div>';
-  document.body.appendChild(ov);
-  const fecha = () => { document.removeEventListener('keydown', tecla); ov.remove(); };
-  const tecla = e => { if (e.key === 'Escape') { e.preventDefault(); fecha(); } };
-  document.addEventListener('keydown', tecla);
-  ov.onclick = e => { if (e.target === ov) fecha(); };
-  ov.querySelector('#afNao').onclick = fecha;
-  ov.querySelector('#afSim').onclick = () => {
-    const vals = {};
-    campos.forEach(c => { const el = document.getElementById('af_' + c.id); vals[c.id] = el ? el.value : c.valor; });
-    fecha(); aoSalvar(vals);
-  };
-  const p = ov.querySelector('input'); if (p) setTimeout(() => p.focus(), 30);
-}
-
-window.__apontEditaRegistro = function(id){
-  const reg = (window.__apontRegsLista || []).find(r => r._id === id);
-  if (!reg) { alert('Registro não encontrado.'); return; }
-  const distintos = campo => [...new Set((window.__apontRegsLista || []).map(r => r[campo]).filter(Boolean))].slice(0, 40);
-  const perda = reg.tipo_registro === 'perda';
-  const campos = perda
-    ? [{ id: 'data', rotulo: 'Data (dd/mm/aaaa)', valor: reg.data || '' },
-       { id: 'fabrica', rotulo: 'Fábrica', valor: reg.fabrica || '', lista: distintos('fabrica') },
-       { id: 'motivo', rotulo: 'Motivo da perda', valor: reg.motivo || '', lista: distintos('motivo') },
-       { id: 'forms', rotulo: 'Nº Forms (opcional)', valor: reg.forms || '' },
-       { id: 'minutos', rotulo: 'Tempo (min)', valor: reg.minutos || '', tipo: 'number' },
-       { id: 'obs', rotulo: 'Observações', valor: reg.obs || '' }]
-    : [{ id: 'data', rotulo: 'Data (dd/mm/aaaa)', valor: reg.data || '' },
-       { id: 'fabrica', rotulo: 'Fábrica', valor: reg.fabrica || '', lista: distintos('fabrica') },
-       { id: 'forms', rotulo: 'Nº Forms', valor: reg.forms || '' },
-       { id: 'tipo', rotulo: 'Atividade', valor: reg.tipo || '', lista: distintos('tipo') },
-       { id: 'pecas', rotulo: 'Peças produzidas', valor: reg.pecas || '', tipo: 'number' },
-       { id: 'minutos', rotulo: 'Tempo (min)', valor: reg.minutos || '', tipo: 'number' },
-       { id: 'obs', rotulo: 'Observações', valor: reg.obs || '' }];
-  __apontFormulario('Editar apontamento — ' + (reg.operador || ''), campos, vals => {
-    const novo = Object.assign({}, reg, vals, { editadoEm: Date.now() });
-    window.__apontGravaRegistro(novo);
-  });
-};
-
-window.__apontApagaRegistro = function(id){
-  const reg = (window.__apontRegsLista || []).find(r => r._id === id);
-  if (!reg) return;
-  __apontFormulario('Excluir este apontamento?',
-    [{ id: 'conf', rotulo: 'Para confirmar, digite EXCLUIR', valor: '' }],
-    vals => {
-      if (String(vals.conf || '').trim().toUpperCase() !== 'EXCLUIR') { alert('Exclusão cancelada — o texto não confere.'); return; }
-      window.__apontRemoveRegistro(id);
-    }, 'Excluir', '#F43F5E');
-};
-
-/* ════════════════════════════════════════════════════════════════════
-   APONTAMENTOS DOS TÉCNICOS — compartilhados
-   Antes, o que o técnico apontava no Registro de Produção ficava só na
-   memória da aba: sumia ao recarregar e ninguém mais via. Agora cada
-   apontamento vira um item em /apont_registros no Firebase (um por
-   registro, só acrescenta — ninguém sobrescreve ninguém) e todos veem.
-   Sem internet: fica numa fila neste navegador e sobe quando conectar.
-   ════════════════════════════════════════════════════════════════════ */
-(function apontRegistrosCompartilhados(){
-  const CAMINHO = '/apont_registros';
-  const FILA = 'apont_regs_pendentes_v1';
-  const CACHE = 'apont_regs_cache_v1';
-  let remotos = [];
-  try { remotos = JSON.parse(localStorage.getItem(CACHE) || '[]') || []; } catch (e) {}
-  const fila = () => { try { return JSON.parse(localStorage.getItem(FILA) || '[]') || []; } catch (e) { return []; } };
-  const setFila = f => { try { Storage.prototype.setItem.call(localStorage, FILA, JSON.stringify(f)); } catch (e) {} };
-
-  function publica(){
-    const ids = new Set(remotos.map(r => r._id));
-    const pend = fila().filter(r => !ids.has(r._id));
-    window.__apontRegsLista = pend.concat(remotos);
-    window.dispatchEvent(new Event('apont-regs-remoto'));
-  }
-  const pronto = () => typeof FB !== 'undefined' && FB.db && (!FB.isConnected || FB.isConnected());
-  function envia(reg){
-    if (!pronto()) return false;
-    try { FB.db.ref(CAMINHO + '/' + reg._id).set(reg); return true; } catch (e) { return false; }
-  }
-  function esvaziaFila(){
-    if (!pronto()) return;
-    const f = fila(); if (!f.length) return;
-    f.forEach(envia);                    // reenviar o mesmo _id é inofensivo (sobrescreve igual)
-  }
-  function limpaConfirmados(){
-    const ids = new Set(remotos.map(r => r._id));
-    const f = fila(), sobrou = f.filter(r => !ids.has(r._id));
-    if (sobrou.length !== f.length) setFila(sobrou);
-  }
-
-  window.__apontSalvaRegistro = function(d){
-    const reg = Object.assign({}, d, {
-      _id: Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
-      criadoEm: Date.now()
-    });
-    /* O registro fica na fila local até o Firebase devolver o eco dele. Assim
-       ele aparece na hora para quem apontou (mesmo sem internet) e sai da fila
-       sozinho quando confirma — sem sumir da tela e sem aparecer duas vezes. */
-    const f = fila(); f.unshift(reg); setFila(f);
-    envia(reg);
-    publica();
-    return reg;
-  };
-
-  // altera um apontamento existente (edição)
-  window.__apontGravaRegistro = function(reg){
-    if (!reg || !reg._id) return;
-    remotos = remotos.map(r => r._id === reg._id ? reg : r);
-    const f = fila().map(r => r._id === reg._id ? reg : r);
-    if (!f.some(r => r._id === reg._id) && !pronto()) f.unshift(reg);
-    setFila(f);
-    envia(reg);
-    publica();
-  };
-  // exclui de vez
-  window.__apontRemoveRegistro = function(id){
-    remotos = remotos.filter(r => r._id !== id);
-    setFila(fila().filter(r => r._id !== id));
-    try { if (pronto()) FB.db.ref(CAMINHO + '/' + id).remove(); } catch (e) { console.warn('[apont] remover:', e); }
-    publica();
-  };
-
-  window.__apontRegsLista = fila().concat(remotos);
-  let tent = 0;
-  const iv = setInterval(() => {
-    tent++;
-    if (pronto()) {
-      clearInterval(iv);
-      esvaziaFila();
-      FB.db.ref(CAMINHO).orderByKey().limitToLast(4000).on('value', snap => {
-        const v = snap.val() || {};
-        remotos = Object.keys(v).map(k => Object.assign({ _id: k }, v[k]))
-                        .sort((a, b) => (b.criadoEm || 0) - (a.criadoEm || 0));
-        try { Storage.prototype.setItem.call(localStorage, CACHE, JSON.stringify(remotos.slice(0, 1500))); } catch (e) {}
-        limpaConfirmados();
-        esvaziaFila();
-        publica();
-      }, err => console.warn('[apont] escuta dos apontamentos falhou:', err && err.message));
-      console.log('[apont] apontamentos compartilhados ligados');
-    } else if (tent > 240) clearInterval(iv);
-  }, 500);
-})();
-
-/* ════════════════════════════════════════════════════════════════════
-   PLANEJADO × APONTADO (programação)
-   Para o dia escolhido, cruza por turno e máquina o que foi programado
-   (requisições e perdas planejadas) com o que os técnicos apontaram.
-   • Aderência ao plano = min apontados nas requisições planejadas ÷ min planejados
-   • Tempo produtivo    = min de produção apontados ÷ capacidade do card
-   Apontamento de requisição que não estava no plano aparece como EXTRA.
-   ════════════════════════════════════════════════════════════════════ */
-function __apontComparativo(R, w, ctx){
-  const h = R.createElement;
-  const dia = ctx.dia, agenda = ctx.agenda || {}, reqs = ctx.reqs || [], ops = ctx.ops || [];
-  const regs = (window.__apontRegsLista || []).filter(r => String(r.data || '').trim() === dia);
-  const normRef = x => String(x == null ? '' : x).toUpperCase().replace(/^#/, '').replace(/^F-?/, '').replace(/\s+/g, '').trim();
-  const baseRef = x => { const m = normRef(x).match(/^(\d+)/); return m ? m[1] : normRef(x); };
-  const turnoDe = nome => { const o = ops.find(x => x.nome === nome); return o ? String(o.turno) : ''; };
-  const catDe = nome => { const o = ops.find(x => x.nome === nome); return o ? o.cat : ''; };
-  const maqDe = r => { const m = String(r.maquina || '').toUpperCase(); return m.includes('CENTRO') ? 'CENTRO' : m.includes('TORNO') ? 'TORNO' : (catDe(r.operador) === 'CENTRO' ? 'CENTRO' : 'TORNO'); };
-  const nOps = (maq, t) => ops.filter(o => o.cat === maq && String(o.turno) === String(t)).length;
-  const cap = (maq, t) => nOps(maq, t) * 385;
-  const pct = (a, b) => b > 0 ? Math.round(a / b * 100) : null;
-  const corPct = p => p == null ? w.suave : p >= 85 ? w.verde : p >= 60 ? w.ambar : w.vermelho;
-  const reqDe = ref => reqs.find(q => String(q.ref) === String(ref)) || {};
-  const perdaRot = ref => { try { return (window.__perdaInfoPub ? window.__perdaInfoPub(ref) : null) || { rotulo: String(ref).split('|')[1], icone: '⏸️' }; } catch (e) { return { rotulo: ref, icone: '⏸️' }; } };
-
-  const blocos = [];
-  let totPlan = 0, totReal = 0, totProd = 0, totCap = 0;
-
-  ctx.turnos.forEach(t => {
-    ['TORNO', 'CENTRO'].forEach(maq => {
-      const plano = agenda[dia + '|' + t + '|' + maq] || [];
-      const meus = regs.filter(r => turnoDe(r.operador) === String(t) && maqDe(r) === maq);
-      if (!plano.length && !meus.length) return;
-
-      const prod = meus.filter(r => r.tipo_registro !== 'perda');
-      const perdas = meus.filter(r => r.tipo_registro === 'perda');
-      const linhas = [], usados = new Set();
-      let plan = 0, real = 0;
-
-      plano.filter(x => !String(x.ref).startsWith('PERDA|')).forEach(x => {
-        const ap = prod.filter(r => normRef(r.forms) === normRef(x.ref) || baseRef(r.forms) === baseRef(x.ref));
-        ap.forEach(r => usados.add(r));
-        const min = ap.reduce((s, r) => s + (Number(r.minutos) || 0), 0);
-        const pcs = ap.reduce((s, r) => s + (Number(r.pecas) || 0), 0);
-        plan += Number(x.min) || 0; real += min;
-        linhas.push({ ref: '#' + x.ref, desc: reqDe(x.ref).peca || '', plan: Number(x.min) || 0, real: min, pcs, tipo: 'plano' });
-      });
-      const extras = {};
-      prod.filter(r => !usados.has(r)).forEach(r => {
-        const k = normRef(r.forms) || '(sem nº)';
-        extras[k] = extras[k] || { real: 0, pcs: 0 };
-        extras[k].real += Number(r.minutos) || 0; extras[k].pcs += Number(r.pecas) || 0;
-      });
-      Object.keys(extras).forEach(k => linhas.push({ ref: '#' + k, desc: '', plan: 0, real: extras[k].real, pcs: extras[k].pcs, tipo: 'extra' }));
-
-      const perdaPlan = plano.filter(x => String(x.ref).startsWith('PERDA|'));
-      const pPlan = perdaPlan.reduce((s, x) => s + (Number(x.min) || 0), 0);
-      const pReal = perdas.reduce((s, r) => s + (Number(r.minutos) || 0), 0);
-      if (perdaPlan.length || perdas.length) {
-        const motivos = {};
-        perdas.forEach(r => { const m = String(r.motivo || 'OUTROS').toUpperCase(); motivos[m] = (motivos[m] || 0) + (Number(r.minutos) || 0); });
-        linhas.push({ ref: 'PERDAS', desc: Object.keys(motivos).map(m => m + ' (' + motivos[m] + 'M)').join(' | ') ||
-                      perdaPlan.map(x => perdaRot(x.ref).rotulo).join(', '), plan: pPlan, real: pReal, pcs: null, tipo: 'perda' });
-      }
-
-      const prodMin = prod.reduce((s, r) => s + (Number(r.minutos) || 0), 0);
-      const c = cap(maq, t);
-      totPlan += plan; totReal += real; totProd += prodMin; totCap += c;
-      blocos.push({ t, maq, linhas, plan, real, prodMin, c, aderencia: pct(real, plan), produtivo: pct(prodMin, c), pPlan, pReal });
-    });
-  });
-
-  const kpi = (rot, val, cor, dica) => h('div', { title: dica || '', className: 'rounded-lg px-3 py-2', style: { background: w.carta, border: '1px solid ' + w.linha, minWidth: 130 } },
-    h('p', { className: 'text-[10px] font-bold uppercase', style: { color: w.suave, letterSpacing: '.5px' } }, rot),
-    h('p', { className: 'text-[18px] font-black', style: { color: cor } }, val));
-
-  const cab = h('div', { className: 'mb-3 flex flex-wrap items-center justify-between gap-3' },
-    h('div', null,
-      h('p', { className: 'text-[14px] font-black', style: { color: w.texto } }, 'Planejado × Apontado'),
-      h('p', { className: 'text-[11px]', style: { color: w.suave } }, dia + ' · ' + regs.length + ' apontamento(s) no dia')),
-    h('div', { className: 'flex flex-wrap gap-2' },
-      kpi('Aderência ao plano', totPlan ? pct(totReal, totPlan) + '%' : '—', corPct(pct(totReal, totPlan)), 'Minutos apontados nas requisições planejadas ÷ minutos planejados'),
-      kpi('Tempo produtivo', totCap ? pct(totProd, totCap) + '%' : '—', corPct(pct(totProd, totCap)), 'Minutos de produção apontados ÷ capacidade dos turnos')));
-
-  if (!blocos.length) {
-    return h('div', { className: 'rounded-xl p-4', style: { background: w.painel, border: '1px solid ' + w.linha } }, cab,
-      h('p', { className: 'py-6 text-center text-[12px]', style: { color: w.suave } }, 'Nada planejado nem apontado neste dia.'));
-  }
-
-  const col = (txt, st) => h('span', { style: Object.assign({ fontSize: 12 }, st || {}) }, txt);
-  const linha = (l, i) => {
-    const extra = l.tipo === 'extra', perda = l.tipo === 'perda';
-    const cor = perda ? w.vermelho : extra ? w.laranja : w.texto;
-    const ok = !extra && !perda && l.plan > 0 ? pct(l.real, l.plan) : null;
-    return h('div', { key: i, className: 'grid items-center gap-2 rounded-md px-3 py-2',
-      style: { gridTemplateColumns: '90px 70px 80px 1fr 60px', background: perda ? '#2a1418' : extra ? '#2a1d12' : w.carta,
-               borderLeft: '3px solid ' + (perda ? w.vermelho : extra ? w.laranja : (ok == null ? w.linha : corPct(ok))) } },
-      col(l.ref, { color: cor, fontWeight: 700, fontFamily: 'monospace' }),
-      col(l.plan + ' min', { color: w.suave }),
-      col(l.real + ' min', { color: perda ? w.vermelho : extra ? w.laranja : corPct(ok), fontWeight: 700 }),
-      extra ? h('span', null, h('span', { className: 'rounded-full px-2 py-0.5 text-[9.5px] font-bold', style: { border: '1px solid ' + w.laranja, color: w.laranja } }, 'EXTRA / NÃO PLANEJADO'))
-            : col((ok != null ? ok + '% · ' : '') + (l.desc || ''), { color: perda ? w.vermelho : w.suave, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: perda ? 'uppercase' : 'none', fontSize: perda ? 10.5 : 12 }),
-      col(l.pcs == null ? '' : l.pcs + ' pç', { color: w.texto, fontWeight: 700, textAlign: 'right' }));
-  };
-
-  return h('div', { className: 'rounded-xl p-4', style: { background: w.painel, border: '1px solid ' + w.linha } }, cab,
-    blocos.map((b, i) => h('div', { key: i, className: 'mb-3 rounded-lg p-3', style: { background: w.fundo, border: '1px solid ' + w.linha } },
-      h('div', { className: 'mb-2 flex flex-wrap items-center justify-between gap-2' },
-        h('p', { className: 'text-[12px] font-black', style: { color: b.maq === 'TORNO' ? w.ciano : w.roxo } }, b.t + 'º turno · ' + (b.maq === 'TORNO' ? 'Torno' : 'Centro')),
-        h('p', { className: 'text-[11px]', style: { color: w.suave } },
-          'plano ' + b.plan + ' min · apontado no plano ' + b.real + ' min · ',
-          h('b', { style: { color: corPct(b.aderencia) } }, b.aderencia == null ? 'sem plano' : b.aderencia + '% aderência'),
-          ' · ',
-          h('b', { style: { color: corPct(b.produtivo) } }, b.produtivo == null ? '—' : b.produtivo + '% produtivo'))),
-      h('div', { className: 'mb-1 grid gap-2 px-3 text-[9.5px] font-bold uppercase', style: { gridTemplateColumns: '90px 70px 80px 1fr 60px', color: w.suave, letterSpacing: '.5px' } },
-        h('span', null, 'Nº'), h('span', null, 'Plano'), h('span', null, 'Apontado'), h('span', null, 'Situação'), h('span', { style: { textAlign: 'right' } }, 'Peças')),
-      h('div', { className: 'space-y-1' }, b.linhas.map(linha)))));
-}
-window.__apontComparativo = __apontComparativo;
-
-/* ════════════════════════════════════════════════════════════════════
-   PERDAS PLANEJADAS — programação do apontamento
-   Blocos arrastáveis (limpeza, manutenção, treinamento…) que ocupam minutos
-   da capacidade do turno/máquina, igual a uma requisição. Ficam na mesma
-   agenda da programação, com ref "PERDA|<tipo>", então são salvos e
-   sincronizados junto. Não entram em cascata para o turno seguinte e não
-   aparecem na lista de requisições do técnico.
-   ════════════════════════════════════════════════════════════════════ */
-const PERDAS_PLANEJADAS = [
-  { id: 'limpeza',     rotulo: 'Limpeza / 5S',          icone: '🧹', min: 30, cor: '#38bdf8' },
-  { id: 'manutencao',  rotulo: 'Manutenção da máquina', icone: '🔧', min: 60, cor: '#f59e0b' },
-  { id: 'treinamento', rotulo: 'Treinamento',           icone: '🎓', min: 60, cor: '#a78bfa' },
-  { id: 'reuniao',     rotulo: 'Reunião / DDS',         icone: '🗣️', min: 15, cor: '#34d399' },
-  { id: 'refeicao',    rotulo: 'Pausa extra',           icone: '☕', min: 15, cor: '#f472b6' },
-  { id: 'outros',      rotulo: 'Outras perdas',         icone: '⏸️', min: 30, cor: '#94a3b8' }
-];
-function __perdaInfo(ref){
-  const id = String(ref || '').split('|')[1] || 'outros';
-  return PERDAS_PLANEJADAS.find(p => p.id === id) || { id, rotulo: id, icone: '⏸️', min: 30, cor: '#94a3b8' };
-}
-function __perdaMin(ref){ return __perdaInfo(ref).min; }
-
-// Painel com os blocos para arrastar (desenhado dentro do React do apontamento)
-function __perdasPaleta(R, w, setArrasto){
-  const h = R.createElement;
-  return h('div', { className: 'mb-4 rounded-lg p-3', style: { background: w.carta, border: '1px solid ' + w.linha } },
-    h('div', { className: 'mb-2 flex items-center justify-between' },
-      h('p', { className: 'text-[12px] font-black', style: { color: w.texto } }, 'Perdas planejadas'),
-      h('span', { className: 'text-[9.5px]', style: { color: w.suave } }, 'arraste para um turno')),
-    h('div', { className: 'flex flex-wrap gap-1.5' },
-      PERDAS_PLANEJADAS.map(p => h('div', {
-        key: p.id,
-        draggable: true,
-        onDragStart: ev => { try { ev.dataTransfer.setData('text/plain', 'PERDA|' + p.id); } catch (e) {} setArrasto('PERDA|' + p.id); },
-        onDragEnd: () => setArrasto(null),
-        title: p.rotulo + ' — ' + p.min + ' min (ajuste depois de soltar)',
-        className: 'rounded-md px-2 py-1 text-[10.5px] font-semibold',
-        style: { background: p.cor + '1f', border: '1px solid ' + p.cor + '66', color: p.cor, cursor: 'grab', userSelect: 'none' }
-      }, p.icone + ' ' + p.rotulo, h('span', { style: { opacity: .7, fontWeight: 400 } }, ' · ' + p.min + 'm'))))
-  );
-}
-
-// Como a perda aparece dentro do turno
-function __perdaItem(R, w, item, acoes){
-  const h = R.createElement, p = __perdaInfo(item.ref);
-  return h('div', { key: item.ref, className: 'rounded-lg px-2.5 py-1.5',
-                    style: { background: p.cor + '14', border: '1px dashed ' + p.cor + '80' } },
-    h('div', { className: 'flex items-center justify-between gap-2' },
-      h('span', { className: 'min-w-0 truncate text-[11px] font-semibold', style: { color: p.cor } }, p.icone + ' ' + p.rotulo),
-      h('button', { onClick: acoes.tirar, title: 'Tirar', style: { color: w.suave, background: 'transparent', border: 'none', cursor: 'pointer' } }, '✕')),
-    h('div', { className: 'mt-1 flex items-center gap-1.5' },
-      h('input', { type: 'number', min: '0', value: item.min,
-                   onChange: ev => acoes.mudar(ev.target.value),
-                   className: 'rounded px-1.5 py-1 text-[11px]',
-                   style: { width: 62, background: w.painel, color: w.texto, border: '1px solid ' + w.linha, colorScheme: 'dark' } }),
-      h('span', { className: 'text-[9.5px]', style: { color: w.suave } }, 'min · perda planejada'))
-  );
-}
-window.__perdaMin = __perdaMin;
-window.__perdaInfoPub = __perdaInfo;
-window.__perdasPaleta = __perdasPaleta;
-window.__perdaItem = __perdaItem;
 
 /* O bundle do apontamento (≈780 KB) fica como texto inerte no HTML e só é
    compilado quando alguém abre o apontamento. Sem isto, todo mundo — inclusive
@@ -20285,6 +20299,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:#9ca3af;font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 22/09/2026 15:12</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:#9ca3af;font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 22/09/2026 16:03</div>
 </body>
 </html>
