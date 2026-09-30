@@ -3552,17 +3552,33 @@ window.__apontImportaPlanilha = function(file){
         const escolhidos = limite ? regs.filter(r => { const d = emDia(r.data); return d && d >= limite; }) : regs;
         if (!escolhidos.length) { alert('Nenhum registro a partir dessa data.'); return; }
 
-        const jaTem = new Set((window.__apontRegsLista || []).map(r => r._id));
-        const novos = escolhidos.filter(r => !jaTem.has(r._id));
-        const repetidos = escolhidos.length - novos.length;
-        if (!confirm('Importar ' + novos.length + ' apontamento(s)?' +
-            (repetidos ? '\n(' + repetidos + ' já estão no app e serão ignorados)' : '') +
-            '\n\nEles ficam visíveis para todo mundo e entram no comparativo Planejado × Apontado.')) return;
+        /* Reimportar não ignora mais o que já está lá: se algum valor mudou
+           na planilha (tempo, motivo, peças…), o registro é atualizado. Foi
+           assim que importações antigas, feitas antes de o app entender a
+           coluna de tempo das perdas, ficaram presas com zero minutos. */
+        const atuais = {};
+        (window.__apontRegsLista || []).forEach(r => { atuais[r._id] = r; });
+        const igual = (a, b) => ['data', 'forms', 'maquina', 'pecas', 'status', 'fabrica', 'obs', 'minutos', 'operador', 'tipo', 'motivo', 'desenho']
+          .every(k => String(a[k] == null ? '' : a[k]) === String(b[k] == null ? '' : b[k]));
+        const novos = escolhidos.filter(r => !atuais[r._id]);
+        const mudados = escolhidos.filter(r => atuais[r._id] && !igual(r, atuais[r._id]));
+        const iguais = escolhidos.length - novos.length - mudados.length;
+        if (!novos.length && !mudados.length) { alert('Tudo o que está na planilha já está no app, igualzinho — nada a fazer.'); return; }
+        if (!confirm('Importar ' + novos.length + ' apontamento(s) novo(s)' +
+            (mudados.length ? '\ne corrigir ' + mudados.length + ' que mudaram na planilha' : '') +
+            (iguais ? '\n(' + iguais + ' já estão iguais e ficam como estão)' : '') +
+            '?\n\nEles ficam visíveis para todo mundo e entram no comparativo Planejado × Apontado.')) return;
 
-        let n = 0, perdas = 0;
-        novos.forEach(r => { try { window.__apontGravaRegistro(r); n++; if (r.tipo_registro === 'perda') perdas++; } catch (err) { console.warn('[import]', r._id, err); } });
+        let n = 0, perdas = 0, corrigidos = 0;
+        novos.concat(mudados).forEach(r => {
+          try {
+            const antigo = atuais[r._id];
+            window.__apontGravaRegistro(antigo ? Object.assign({}, antigo, r) : r);
+            if (antigo) corrigidos++; else { n++; if (r.tipo_registro === 'perda') perdas++; }
+          } catch (err) { console.warn('[import]', r._id, err); }
+        });
         alert('✓ ' + n + ' apontamento(s) importado(s)' + (perdas ? ' — ' + perdas + ' de perda e ' + (n - perdas) + ' de produção.' : '.')
-          + (repetidos ? '\n' + repetidos + ' já existiam e foram mantidos.' : '')
+          + (corrigidos ? '\n' + corrigidos + ' registro(s) corrigido(s) com os valores da planilha.' : '')
           + (!perdas && !nPerdas ? '\n\nEsta planilha não tem coluna de motivo, então tudo entrou como produção. As perdas (DDS, limpeza, quebra…) precisam vir na planilha de perdas — sem elas, a disponibilidade do período fica alta demais.' : ''));
       } catch (err) { console.error('[importar apontamentos]', err); alert('Não consegui ler a planilha: ' + (err.message || err)); }
     };
@@ -21765,6 +21781,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 30/09/2026 15:24</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 30/09/2026 15:43</div>
 </body>
 </html>
