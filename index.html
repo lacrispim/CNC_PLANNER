@@ -3493,11 +3493,36 @@ window.__apontImportaPlanilha = function(file){
         };
 
         const pega = (l, ...nomes) => { for (const n of nomes) { if (l[n] !== undefined && l[n] !== '') return l[n]; } return ''; };
+        /* A mesma tela importa dois tipos de planilha: a de PRODUÇÃO e a de
+           PERDAS. O que diferencia é ter uma coluna de motivo — se a linha
+           tiver motivo preenchido, ela entra como perda. */
+        const MOTIVO = ['lossReason', 'motivo', 'reason', 'Motivo', 'Motivo da parada', 'lossType', 'categoria', 'category'];
+        const TEMPO_PERDA = ['timeLost', 'lostTime', 'lossTime', 'tempoPerdido', 'downtime', 'minutes', 'minutos', 'tempo'];
         const regs = [];
+        let nPerdas = 0;
         linhas.forEach(l => {
           const dia = D(pega(l, 'date', 'data', 'Data'));
           if (!dia || dia.length < 8) return;
           const id = T(pega(l, 'id', 'ID'));
+          const motivo = T(pega.apply(null, [l].concat(MOTIVO)));
+          if (motivo) {                                   // ── linha de perda ──
+            nPerdas++;
+            regs.push({
+              _id: id ? 'xls_' + id : ('xlsp_' + dia.replace(/\//g, '') + '_' + Math.random().toString(36).slice(2, 8)),
+              criadoEm: carimbo(pega(l, 'apontamento'), dia),
+              data: dia,
+              motivo: motivo.toUpperCase(),
+              minutos: T(pega.apply(null, [l].concat(TEMPO_PERDA, ['machiningTime']))) || '0',
+              fabrica: T(pega(l, 'factory', 'fabrica')),
+              maquina: T(pega(l, 'machine', 'maquina')),
+              forms: T(pega(l, 'formsNumber', 'forms')),
+              obs: T(pega(l, 'observations', 'obs')),
+              operador: T(pega(l, 'operatorId', 'operador')),
+              pecasMortas: T(pega(l, 'deadPartsQuantity', 'pecasMortas')) || '',
+              tipo_registro: 'perda'
+            });
+            return;
+          }
           regs.push({
             _id: id ? 'xls_' + id : ('xls_' + dia.replace(/\//g, '') + '_' + Math.random().toString(36).slice(2, 8)),
             criadoEm: carimbo(pega(l, 'apontamento'), dia),
@@ -3534,9 +3559,11 @@ window.__apontImportaPlanilha = function(file){
             (repetidos ? '\n(' + repetidos + ' já estão no app e serão ignorados)' : '') +
             '\n\nEles ficam visíveis para todo mundo e entram no comparativo Planejado × Apontado.')) return;
 
-        let n = 0;
-        novos.forEach(r => { try { window.__apontGravaRegistro(r); n++; } catch (err) { console.warn('[import]', r._id, err); } });
-        alert('✓ ' + n + ' apontamento(s) importado(s).' + (repetidos ? '\n' + repetidos + ' já existiam e foram mantidos.' : ''));
+        let n = 0, perdas = 0;
+        novos.forEach(r => { try { window.__apontGravaRegistro(r); n++; if (r.tipo_registro === 'perda') perdas++; } catch (err) { console.warn('[import]', r._id, err); } });
+        alert('✓ ' + n + ' apontamento(s) importado(s)' + (perdas ? ' — ' + perdas + ' de perda e ' + (n - perdas) + ' de produção.' : '.')
+          + (repetidos ? '\n' + repetidos + ' já existiam e foram mantidos.' : '')
+          + (!perdas && !nPerdas ? '\n\nEsta planilha não tem coluna de motivo, então tudo entrou como produção. As perdas (DDS, limpeza, quebra…) precisam vir na planilha de perdas — sem elas, a disponibilidade do período fica alta demais.' : ''));
       } catch (err) { console.error('[importar apontamentos]', err); alert('Não consegui ler a planilha: ' + (err.message || err)); }
     };
     fr.readAsArrayBuffer(file);
@@ -21738,6 +21765,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 30/09/2026 15:14</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 30/09/2026 15:24</div>
 </body>
 </html>
