@@ -4319,6 +4319,10 @@ function __apontComparativo(R, w, ctx){
          fora do plano, a contagem congela naquele ponto: o que for encerrado
          depois não entra. Se o extra vier só depois de fechar todo o plano,
          não penaliza (já estava em 100%). */
+      /* Um form planejado conta como FEITO quando o técnico marcou Concluído
+         (ou "Cumprido — segue no próximo turno") OU quando o tempo apontado
+         alcançou o que estava planejado. Levar mais tempo que o previsto não
+         tira o crédito — isso já aparece na produtividade e na assertividade. */
       const emOrdem = prod.slice().sort((a, b) => (a.criadoEm || 0) - (b.criadoEm || 0));
       const concluidos = new Set(), seguem = new Set();
       let congelado = null, refExtra = null;
@@ -4327,8 +4331,16 @@ function __apontComparativo(R, w, ctx){
         if (planMin[k] === undefined) { if (congelado === null) { congelado = concluidos.size; refExtra = normRef(r.forms) || '(sem nº)'; } return; }
         if (encerrado(r)) { concluidos.add(k); if (segue(r) && !prod.some(x => chaveDe(x) === k && String(x.status || '').toUpperCase().indexOf('ENCERR') === 0)) seguem.add(k); }
       });
+      // tempo planejado cumprido também conta como feito
+      Object.keys(planMin).forEach(k => {
+        if (!concluidos.has(k) && planMin[k] > 0 && (realMin[k] || 0) >= planMin[k]) concluidos.add(k);
+      });
+      /* A ordem não pesa: o que vale é se os forms planejados foram feitos.
+         Pegar algo fora do plano aparece no bloco "Feito fora do plano" e no
+         tempo produtivo, mas não derruba a aderência de quem cumpriu o plano. */
+      congelado = null;
       const planQtd = ordem.length;
-      const adConcl = congelado === null ? concluidos.size : congelado;
+      const adConcl = concluidos.size;
       const aderencia = planQtd ? Math.round(adConcl / planQtd * 100) : null;
 
       /* ── PRODUTIVIDADE (máx. 100%) ──
@@ -4424,7 +4436,7 @@ function __apontComparativo(R, w, ctx){
       h('p', { className: 'text-[11.5px]', style: { color: w.suave } }, dia + ' · ' + regs.length + ' apontamento(s) no dia')),
     h('div', { className: 'flex flex-wrap gap-2' },
       kpi('Aderência', gAderencia == null ? '—' : gAderencia + '%', corPct(gAderencia),
-          'Forms planejados marcados como Concluído antes do primeiro form fora do plano ÷ total de forms planejados.'),
+          'Forms planejados que foram feitos ÷ total de forms planejados do turno. Conta como feito quem foi marcado como Concluído ou cumpriu o tempo planejado. A ordem não importa.'),
       kpi('Produtividade', gProd == null ? '—' : gProd + '%', corPct(gProd),
           'Soma de menor(tempo real, tempo planejado) de cada form ÷ tempo planejado total.'),
       kpi('Assertividade', gAss == null ? '—' : gAss + '%', corPct(gAss),
@@ -4505,7 +4517,7 @@ function __apontComparativo(R, w, ctx){
               'planejado ', h('b', { style: { color: w.texto } }, b.planTot + ' min'),
               ' · apontado ', h('b', { style: { color: w.texto } }, realTotal + ' min'))),
           h('div', { className: 'flex flex-wrap gap-1.5' },
-            selo('Aderência', b.aderencia, corPct(b.aderencia), b.adConcl + ' de ' + b.planQtd + ' forms concluídos' + (b.refExtra ? ' — congelou no extra #' + b.refExtra : '')),
+            selo('Aderência', b.aderencia, corPct(b.aderencia), b.adConcl + ' de ' + b.planQtd + ' forms planejados feitos' + (b.refExtra ? ' · também pegou o #' + b.refExtra + ', fora do plano' : '')),
             selo('Produtividade', b.produtividade, corPct(b.produtividade), 'Tempo cumprido ÷ tempo planejado'),
             selo('Assertividade', b.assertividade, corPct(b.assertividade), 'O quanto o tempo real ficou perto do planejado'))),
         planejadas.length ? h('div', null, tituloGrupo('Planejado para o turno', w.suave, planejadas.length + ' form(s)'),
@@ -22025,6 +22037,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 30/09/2026 17:14</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 08:28</div>
 </body>
 </html>
