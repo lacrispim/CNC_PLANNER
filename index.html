@@ -3167,24 +3167,85 @@ function __apontPlanejadoPorFabrica(){
     const st = JSON.parse(localStorage.getItem('apont_prog_manual_v1') || '{}') || {};
     const reqs = st.reqs || [], agenda = st.agenda || {};
     const f = window.__apontFiltro || {};
-    const nk = x => String(x == null ? '' : x).toUpperCase().replace(/^#/, '').trim();
+    const nk = window.__apontNormRef || (x => String(x == null ? '' : x).toUpperCase().replace(/^#/, '').trim());
     const fabDe = ref => {
       const r = reqs.find(q => nk(q.ref) === nk(ref));
-      return (r && String(r.site || '').toUpperCase().trim()) || 'SEM FÁBRICA';
+      const s = (r && String(r.site || '').toUpperCase().trim()) || '';
+      return s || (window.__apontFabricaDe ? String(window.__apontFabricaDe(ref, '') || '').toUpperCase() : '') || 'SEM FÁBRICA';
     };
+    const noFiltro = p => {
+      if (p.length !== 3) return false;
+      if (f.ano && p[2] !== String(f.ano)) return false;
+      if (f.mes && p[1] !== String(f.mes)) return false;
+      if (f.dia && p[0] !== String(f.dia)) return false;
+      return true;
+    };
+
+    const perdasDoDia = {};          // perdas planejadas, guardadas por dia para repartir depois
     Object.keys(agenda).forEach(chave => {
-      const p = chave.split('|')[0].split('/');          // dd/mm/aaaa
-      if (p.length !== 3) return;
-      if (f.ano && p[2] !== String(f.ano)) return;
-      if (f.mes && p[1] !== String(f.mes)) return;
-      if (f.dia && p[0] !== String(f.dia)) return;
+      const partes = chave.split('|');
+      const p = partes[0].split('/');
+      if (!noFiltro(p)) return;
       (agenda[chave] || []).forEach(item => {
         const min = Number(item.min) || 0;
         if (!min) return;
-        const perda = String(item.ref).startsWith('PERDA|');
-        const fab = perda ? 'TORRE' : fabDe(item.ref);
-        out[fab] = out[fab] || { producao: 0, perda: 0 };
-        out[fab][perda ? 'perda' : 'producao'] += min / 60;
+        if (String(item.ref).startsWith('PERDA|')) {
+          const info = (typeof __perdaInfo === 'function') ? __perdaInfo(item.ref) : { rotulo: 'Perda planejada', cor: '#8AA87E' };
+          const d = partes[0];
+          perdasDoDia[d] = perdasDoDia[d] || [];
+          perdasDoDia[d].push({ h: min / 60, rotulo: info.rotulo, cor: info.cor });
+          return;
+        }
+        const fab = fabDe(item.ref);
+        out[fab] = out[fab] || { producao: 0, perda: 0, tipos: {} };
+        out[fab].producao += min / 60;
+      });
+    });
+
+    /* A perda planejada (limpeza, DDS, manutenção) não carrega fábrica — ela é
+       tempo do turno. Para o PLAN ficar comparável com o REAL, ela é repartida
+       entre as fábricas na mesma proporção em que o técnico apontou as perdas
+       daquele dia. Sem perda apontada, segue a proporção da produção do dia;
+       sem nada apontado, vai para as fábricas que estavam programadas. */
+    const regs = window.__apontRegsLista || [];
+    const pesosDoDia = (d) => {
+      const peso = {};
+      const mesmoDia = r => String(r && r.data || '').slice(0, 10) === d;
+      let soma = 0;
+      regs.forEach(r => {
+        if (!mesmoDia(r) || r.tipo_registro !== 'perda') return;
+        const fb = String(r.fabrica || '').toUpperCase().trim(); if (!fb) return;
+        const v = Number(r.minutos) || 0; if (!v) return;
+        peso[fb] = (peso[fb] || 0) + v; soma += v;
+      });
+      if (soma > 0) return { peso: peso, soma: soma };
+      regs.forEach(r => {
+        if (!mesmoDia(r) || r.tipo_registro === 'perda') return;
+        const fb = String(r.fabrica || '').toUpperCase().trim(); if (!fb) return;
+        const v = Number(r.minutos) || 0; if (!v) return;
+        peso[fb] = (peso[fb] || 0) + v; soma += v;
+      });
+      if (soma > 0) return { peso: peso, soma: soma };
+      Object.keys(out).forEach(fb => { peso[fb] = out[fb].producao; soma += out[fb].producao; });
+      return soma > 0 ? { peso: peso, soma: soma } : null;
+    };
+
+    Object.keys(perdasDoDia).forEach(d => {
+      const w = pesosDoDia(d);
+      perdasDoDia[d].forEach(perda => {
+        if (!w) {                       // nada para repartir: fica num grupo à parte
+          const g = out['Perdas planejadas'] = out['Perdas planejadas'] || { producao: 0, perda: 0, tipos: {} };
+          g.perda += perda.h;
+          g.tipos[perda.rotulo] = { h: (g.tipos[perda.rotulo] ? g.tipos[perda.rotulo].h : 0) + perda.h, cor: perda.cor };
+          return;
+        }
+        Object.keys(w.peso).forEach(fb => {
+          const fatia = perda.h * (w.peso[fb] / w.soma);
+          if (fatia <= 0) return;
+          out[fb] = out[fb] || { producao: 0, perda: 0, tipos: {} };
+          out[fb].perda += fatia;
+          out[fb].tipos[perda.rotulo] = { h: (out[fb].tipos[perda.rotulo] ? out[fb].tipos[perda.rotulo].h : 0) + fatia, cor: perda.cor };
+        });
       });
     });
   } catch (e) { console.warn('[plan×real]', e); }
@@ -3206,7 +3267,8 @@ function __apontPlanReal(R, w, realizado, zr, ordem){
     const r = (realizado || []).find(x => x.nome === nome) || {};
     const p = plano[nome] || { producao: 0, perda: 0 };
     const partes = window.__apontAbrePerdas ? window.__apontAbrePerdas(r, ordem, 'fab') : ordem.map(c => ({ cat: c, h: r[c] || 0 })).filter(x => x.h > 0);
-    return { nome: nome, real: r.total || 0, partes: partes, planProd: p.producao, planPerda: p.perda, plan: p.producao + p.perda };
+    return { nome: nome, real: r.total || 0, partes: partes, planProd: p.producao, planPerda: p.perda,
+             planTipos: p.tipos || {}, plan: p.producao + p.perda };
   }).sort((a, b) => (b.real + b.plan) - (a.real + a.plan)).slice(0, 12);
 
   const topo = Math.max(1, Math.max.apply(null, dados.map(d => Math.max(d.real, d.plan)))) * 1.15;
@@ -3226,8 +3288,10 @@ function __apontPlanReal(R, w, realizado, zr, ordem){
         h('div', { className: 'flex flex-col items-center justify-end', style: { height: '100%' } },
           barra(d.plan ? fmt(d.plan) : '', w.suave),
           h('div', { style: { width: 30, height: alt(d.plan), display: 'flex', flexDirection: 'column-reverse', borderRadius: '3px 3px 0 0', overflow: 'hidden', background: d.plan ? 'transparent' : w.linha } },
-            h('div', { title: 'Produção planejada', style: { height: (d.plan ? (d.planProd / d.plan * 100) : 0) + '%', background: '#D4D4D4' } }),
-            d.planPerda ? h('div', { title: 'Perdas planejadas', style: { height: (d.planPerda / d.plan * 100) + '%', background: '#8AA87E' } }) : null)),
+            d.planProd ? h('div', { title: 'Produção planejada: ' + fmt(d.planProd), style: { height: (d.planProd / d.plan * 100) + '%', background: '#D4D4D4' } }) : null,
+            Object.keys(d.planTipos || {}).map(nome => h('div', { key: nome,
+              title: nome + ' (planejado): ' + fmt(d.planTipos[nome].h),
+              style: { height: (d.planTipos[nome].h / d.plan * 100) + '%', background: d.planTipos[nome].cor } })))),
         // realizado
         h('div', { className: 'flex flex-col items-center justify-end', style: { height: '100%' } },
           barra(d.real ? fmt(d.real) : '', w.texto),
@@ -3252,8 +3316,19 @@ function __apontPlanReal(R, w, realizado, zr, ordem){
         h('p', { className: 'text-[9.5px] font-bold uppercase', style: { color: w.suave, letterSpacing: '.5px' } }, 'Total apontado'))),
     h('div', { className: 'flex items-end gap-2', style: { overflowX: 'auto', paddingBottom: 4 } }, eixo,
       h('div', { className: 'flex items-end gap-4' }, dados.map(coluna))),
-    h('p', { className: 'mt-3 text-[11px]', style: { color: w.suave } },
-      'PLAN é o que a Programação reservou no período (cinza: produção; verde: perdas planejadas). REAL é o apontado, nas cores das categorias. Passe o mouse para ver os números.'));
+    (function(){
+      const tipos = {};
+      dados.forEach(d => Object.keys(d.planTipos || {}).forEach(n => { tipos[n] = d.planTipos[n].cor; }));
+      const nomes = Object.keys(tipos);
+      return nomes.length ? h('div', { className: 'mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10.5px]', style: { color: w.suave } },
+        h('span', { className: 'font-bold uppercase', style: { letterSpacing: '.4px' } }, 'Planejado'),
+        h('span', { className: 'flex items-center gap-1.5' },
+          h('span', { style: { width: 9, height: 9, borderRadius: 2, background: '#D4D4D4', display: 'inline-block' } }), 'Produção'),
+        nomes.map(n => h('span', { key: n, className: 'flex items-center gap-1.5' },
+          h('span', { style: { width: 9, height: 9, borderRadius: 2, background: tipos[n], display: 'inline-block' } }), n))) : null;
+    })(),
+    h('p', { className: 'mt-2 text-[11px]', style: { color: w.suave } },
+      'PLAN é o que a Programação reservou no período: cinza é produção e as cores são as perdas que o programador já deixou no turno. REAL é o apontado, nas cores das categorias. Passe o mouse para ver os números.'));
 }
 window.__apontPlanReal = __apontPlanReal;
 
@@ -22272,6 +22347,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 10:39</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 16:12</div>
 </body>
 </html>
