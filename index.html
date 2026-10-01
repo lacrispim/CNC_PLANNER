@@ -19886,8 +19886,28 @@ window.__apontLiderEmergencia = __apontLiderEmergencia;
     if (typeof window._espelhaNoFirebase === 'function') window._espelhaNoFirebase(k, v);
   };
 
+  /* Um navegador em versão antiga reenvia os cards sem a quantidade de peças —
+   e, como a última gravação vence, apagaria o que o planejador digitou aqui.
+   Então: card que chega SEM o campo mantém a quantidade local; card que chega
+   com o campo vazio (null) apaga mesmo, porque alguém apagou de propósito. */
+  function preservaPecas(estado){
+    try {
+      const local = JSON.parse(localStorage.getItem(CHAVE) || '{}') || {};
+      const ag = local.agenda || {};
+      Object.keys(estado.agenda || {}).forEach(chave => {
+        const antes = ag[chave]; if (!Array.isArray(antes)) return;
+        (estado.agenda[chave] || []).forEach(item => {
+          if (!item || item.pcs !== undefined) return;
+          const velho = antes.find(x => x && String(x.ref) === String(item.ref));
+          if (velho && velho.pcs !== undefined && velho.pcs !== null) item.pcs = velho.pcs;
+        });
+      });
+    } catch (e) {}
+    return estado;
+  }
+
   function aplicaNoApp(m){
-    const json = JSON.stringify(monta(m));
+    const json = JSON.stringify(preservaPecas(monta(m)));
     if (json !== localStorage.getItem(CHAVE)) {
       setOriginal(CHAVE, json);
       window.dispatchEvent(new Event('apont-prog-remoto'));
@@ -22453,6 +22473,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 16:47</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 17:00</div>
 </body>
 </html>
