@@ -3597,11 +3597,25 @@ window.__apontImportaPlanilha = function(file){
 
         const ordenadas = regs.map(r => r.data).filter(Boolean).sort((a, b) => emDia(a) - emDia(b));
         const sugerida = ordenadas[0] || '';
-        const corte = prompt(
-          'IMPORTAR APONTAMENTOS\n\n' + regs.length + ' registro(s) na planilha, de ' + ordenadas[0] + ' a ' + ordenadas[ordenadas.length - 1] + '.\n\n' +
-          'Importar a partir de qual data? (dd/mm/aaaa)\nDeixe em branco para trazer todos.', sugerida);
-        if (corte === null) return;
-        const limite = corte.trim() ? emDia(D(corte.trim())) : null;
+        /* Caixa do próprio app: o prompt/confirm do navegador pode estar
+           bloqueado (o Edge oferece "impedir novas caixas de diálogo") e aí a
+           importação era abortada em silêncio, sem nenhuma mensagem. */
+        __apontFormulario('⬆ Importar apontamentos', [
+          { html: regs.length + ' registro(s) na planilha, de <b>' + ordenadas[0] + '</b> a <b>' + ordenadas[ordenadas.length - 1] + '</b>.'
+                  + '<div style="font-size:11.5px;color:#8A8A93;margin-top:6px">Deixe em branco para trazer todos. O que já está no app é atualizado, nunca duplicado.</div>' },
+          { id: 'corte', rotulo: 'Importar a partir de qual data? (dd/mm/aaaa)', valor: sugerida }
+        ], vals => __apontImportaConfirma(regs, String(vals.corte || '').trim(), D, emDia), 'Continuar');
+        return;
+      } catch (err) { console.error('[importar apontamentos]', err); alert('Não consegui ler a planilha: ' + (err.message || err)); }
+    };
+    fr.readAsArrayBuffer(file);
+  });
+};
+
+/* Segunda etapa: escolhida a data, confere o que é novo, o que mudou e grava. */
+window.__apontImportaConfirma = function(regs, corte, D, emDia){
+  try {
+        const limite = corte ? emDia(D(corte)) : null;
         const escolhidos = limite ? regs.filter(r => { const d = emDia(r.data); return d && d >= limite; }) : regs;
         if (!escolhidos.length) { alert('Nenhum registro a partir dessa data.'); return; }
 
@@ -3617,11 +3631,16 @@ window.__apontImportaPlanilha = function(file){
         const mudados = escolhidos.filter(r => atuais[r._id] && !igual(r, atuais[r._id]));
         const iguais = escolhidos.length - novos.length - mudados.length;
         if (!novos.length && !mudados.length) { alert('Tudo o que está na planilha já está no app, igualzinho — nada a fazer.'); return; }
-        if (!confirm('Importar ' + novos.length + ' apontamento(s) novo(s)' +
-            (mudados.length ? '\ne corrigir ' + mudados.length + ' que mudaram na planilha' : '') +
-            (iguais ? '\n(' + iguais + ' já estão iguais e ficam como estão)' : '') +
-            '?\n\nEles ficam visíveis para todo mundo e entram no comparativo Planejado × Apontado.')) return;
+        __apontFormulario('Confirmar importação', [
+          { html: (novos.length ? '<b style="color:#10B981">' + novos.length + '</b> apontamento(s) novo(s)<br>' : '')
+                + (mudados.length ? '<b style="color:#FBBF24">' + mudados.length + '</b> que mudaram na planilha serão corrigidos<br>' : '')
+                + (iguais ? '<span style="color:#8A8A93">' + iguais + ' já estão iguais e ficam como estão</span>' : '') }
+        ], () => __apontImportaGrava(novos, mudados, atuais), 'Importar');
+      } catch (err) { console.error('[importar apontamentos]', err); alert('Falhou ao preparar a importação: ' + (err.message || err)); }
+};
 
+window.__apontImportaGrava = function(novos, mudados, atuais){
+  try {
         let n = 0, perdas = 0, corrigidos = 0;
         novos.concat(mudados).forEach(r => {
           try {
@@ -3632,11 +3651,8 @@ window.__apontImportaPlanilha = function(file){
         });
         alert('✓ ' + n + ' apontamento(s) importado(s)' + (perdas ? ' — ' + perdas + ' de perda e ' + (n - perdas) + ' de produção.' : '.')
           + (corrigidos ? '\n' + corrigidos + ' registro(s) corrigido(s) com os valores da planilha.' : '')
-          + (!perdas && !nPerdas ? '\n\nEsta planilha não tem coluna de motivo, então tudo entrou como produção. As perdas (DDS, limpeza, quebra…) precisam vir na planilha de perdas — sem elas, a disponibilidade do período fica alta demais.' : ''));
-      } catch (err) { console.error('[importar apontamentos]', err); alert('Não consegui ler a planilha: ' + (err.message || err)); }
-    };
-    fr.readAsArrayBuffer(file);
-  });
+          + (!perdas && !novos.some(r => r.tipo_registro === 'perda') ? '\n\nEsta planilha não tem coluna de motivo, então tudo entrou como produção. As perdas (DDS, limpeza, quebra…) precisam vir na planilha de perdas — sem elas, a disponibilidade do período fica alta demais.' : ''));
+  } catch (err) { console.error('[importar apontamentos]', err); alert('Falhou ao gravar: ' + (err.message || err)); }
 };
 
 /* ════════════════════════════════════════════════════════════════════
@@ -4132,7 +4148,8 @@ function __apontFormulario(titulo, campos, aoSalvar, textoOk, corOk){
     '<div style="background:#141414;border:1px solid #262626;border-radius:12px;max-width:460px;width:100%;max-height:88vh;overflow:auto;color:#F4F4F5">'
     + '<div style="padding:14px 18px;border-bottom:1px solid #262626;font-size:14px;font-weight:800">' + esc(titulo) + '</div>'
     + '<div style="padding:16px 18px;display:grid;gap:10px">'
-    + campos.map(c => '<label style="display:block;font-size:11px;color:#8A8A93;font-weight:700;text-transform:uppercase;letter-spacing:.4px">' + esc(c.rotulo)
+    + campos.map(c => c.html ? '<div style="font-size:13px;color:#F4F4F5">' + c.html + '</div>'
+        : '<label style="display:block;font-size:11px;color:#8A8A93;font-weight:700;text-transform:uppercase;letter-spacing:.4px">' + esc(c.rotulo)
         + (c.lista ? '<datalist id="dl_' + c.id + '">' + c.lista.map(o => '<option value="' + esc(o) + '">').join('') + '</datalist>' : '')
         + '<input id="af_' + c.id + '" value="' + esc(c.valor) + '"' + (c.lista ? ' list="dl_' + c.id + '"' : '') + (c.tipo === 'number' ? ' type="number" min="0"' : '')
         + ' style="width:100%;margin-top:4px;padding:8px 10px;border-radius:7px;border:1px solid #262626;background:#0C0C0C;color:#F4F4F5;font-size:13px;font-family:inherit;box-sizing:border-box;color-scheme:dark"></label>').join('')
@@ -4149,7 +4166,7 @@ function __apontFormulario(titulo, campos, aoSalvar, textoOk, corOk){
   ov.querySelector('#afNao').onclick = fecha;
   ov.querySelector('#afSim').onclick = () => {
     const vals = {};
-    campos.forEach(c => { const el = document.getElementById('af_' + c.id); vals[c.id] = el ? el.value : c.valor; });
+    campos.forEach(c => { if (c.html) return; const el = document.getElementById('af_' + c.id); vals[c.id] = el ? el.value : c.valor; });
     fecha(); aoSalvar(vals);
   };
   const p = ov.querySelector('input'); if (p) setTimeout(() => p.focus(), 30);
@@ -22240,6 +22257,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 09:43</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 10:08</div>
 </body>
 </html>
