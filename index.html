@@ -3863,10 +3863,14 @@ window.__apontDwRedesenha = __apontDwRedesenha;
    mesma chave, senão a peça não se encontra com o próprio tempo. */
 function __apontNormRef(x){
   let t = String(x == null ? '' : x).toUpperCase().replace(/[^A-Z0-9.]/g, '');
-  t = t.replace(/^SOL/, '').replace(/^S(?=\d)/, '');
+  t = t.replace(/^(MRPS|MRP|SOL|FORMS|F)(?=\d)/, '').replace(/^S(?=\d)/, '');
   const m = t.match(/^(\d+(?:\.\d+)?)/);
   return m ? m[1] : t;
 }
+/* Só os dígitos — última tentativa de casar o mesmo form escrito de formas
+   diferentes: "8620940715.1" (plano) e "MRP86209407151" (apontamento). */
+function __apontSoDigitos(x){ return String(x == null ? '' : x).replace(/\D/g, ''); }
+window.__apontSoDigitos = __apontSoDigitos;
 window.__apontNormRef = __apontNormRef;
 
 /* A fábrica nem sempre vem junto da requisição (depende de como ela entrou
@@ -3929,8 +3933,9 @@ window.__apontFiltraReq = __apontFiltraReq;
    ════════════════════════════════════════════════════════════════════ */
 (function reprogramacao(){
   const TURNOS = ['1', '2', '3'];
-  const normRef = x => String(x == null ? '' : x).toUpperCase().replace(/^#/, '').replace(/^F-?/, '').replace(/\s+/g, '').trim();
+  const normRef = x => (window.__apontNormRef ? window.__apontNormRef(x) : String(x == null ? '' : x).toUpperCase().replace(/^#/, '').trim());
   const baseRef = x => { const m = normRef(x).match(/^(\d+)/); return m ? m[1] : normRef(x); };
+  const digRef = x => (window.__apontSoDigitos ? window.__apontSoDigitos(x) : String(x || ''));
   const feito = r => { const st = String(r.status || '').toUpperCase(); return st.indexOf('ENCERR') === 0 || st.indexOf('CUMPRIDO') === 0; };
   const dData = d => { const p = String(d).split('/'); return new Date(+p[2], +p[1] - 1, +p[0]); };
   const dTxt = dt => String(dt.getDate()).padStart(2, '0') + '/' + String(dt.getMonth() + 1).padStart(2, '0') + '/' + dt.getFullYear();
@@ -3951,7 +3956,7 @@ window.__apontFiltraReq = __apontFiltraReq;
                return (mm.indexOf('CENTRO') >= 0 ? 'CENTRO' : mm.indexOf('TORNO') >= 0 ? 'TORNO' : (o ? o.cat : 'TORNO')) === maq; })());
     return plano.map(x => {
       const k = normRef(x.ref);
-      const meus = regs.filter(r => normRef(r.forms) === k || baseRef(r.forms) === baseRef(x.ref));
+      const meus = regs.filter(r => normRef(r.forms) === k || baseRef(r.forms) === baseRef(x.ref) || (digRef(r.forms) && digRef(r.forms) === digRef(x.ref)));
       const real = meus.reduce((s, r) => s + (Number(r.minutos) || 0), 0);
       if (meus.some(feito)) return null;                       // fez o que tinha que fazer
       const req = reqs.find(q => String(q.ref) === String(x.ref)) || {};
@@ -4264,8 +4269,9 @@ function __apontComparativo(R, w, ctx){
   const h = R.createElement;
   const dia = ctx.dia, agenda = ctx.agenda || {}, reqs = ctx.reqs || [], ops = ctx.ops || [];
   const regs = (window.__apontRegsLista || []).filter(r => String(r.data || '').trim() === dia);
-  const normRef = x => String(x == null ? '' : x).toUpperCase().replace(/^#/, '').replace(/^F-?/, '').replace(/\s+/g, '').trim();
+  const normRef = x => (window.__apontNormRef ? window.__apontNormRef(x) : String(x == null ? '' : x).toUpperCase().replace(/^#/, '').trim());
   const baseRef = x => { const m = normRef(x).match(/^(\d+)/); return m ? m[1] : normRef(x); };
+  const digRef = x => (window.__apontSoDigitos ? window.__apontSoDigitos(x) : String(x || ''));
   const turnoDe = nome => { const o = ops.find(x => x.nome === nome); return o ? String(o.turno) : ''; };
   const catDe = nome => { const o = ops.find(x => x.nome === nome); return o ? o.cat : ''; };
   const maqDe = r => { const m = String(r.maquina || '').toUpperCase(); return m.includes('CENTRO') ? 'CENTRO' : m.includes('TORNO') ? 'TORNO' : (catDe(r.operador) === 'CENTRO' ? 'CENTRO' : 'TORNO'); };
@@ -4303,7 +4309,18 @@ function __apontComparativo(R, w, ctx){
         if (planMin[k] === undefined) { planMin[k] = 0; ordem.push({ k: k, ref: x.ref }); }
         planMin[k] += Number(x.min) || 0;
       });
-      const chaveDe = r => { const k = normRef(r.forms); return planMin[k] !== undefined ? k : (planMin[baseRef(r.forms)] !== undefined ? baseRef(r.forms) : k); };
+      /* Casa o apontamento com o form planejado mesmo quando o técnico escreveu
+         de outro jeito: #8620940715.1 no plano e MRP86209407151 no apontamento. */
+      const porDigitos = {};
+      Object.keys(planMin).forEach(k => { const d = digRef(k); if (d) porDigitos[d] = k; });
+      const chaveDe = r => {
+        const k = normRef(r.forms);
+        if (planMin[k] !== undefined) return k;
+        const b = baseRef(r.forms);
+        if (planMin[b] !== undefined) return b;
+        const d = porDigitos[digRef(r.forms)];
+        return d !== undefined ? d : k;
+      };
 
       // ── realizado por form ──
       const realMin = {}, realPcs = {};
@@ -22037,6 +22054,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 08:28</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 08:36</div>
 </body>
 </html>
