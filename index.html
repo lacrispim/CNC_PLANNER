@@ -22156,6 +22156,7 @@ window.M3D = (function () {
         }
       }
       catch (e) { console.warn('[3D] semente:', e); }
+      { const fora = new Set((_ld('cnc_sol3d_del_v1') || []).map(x => String(x.id))); semente = semente.filter(x => !fora.has(String(x.id))); }
       sols = semente.sort((a, b) => (parseInt(b.id, 10) || 0) - (parseInt(a.id, 10) || 0));
       if (sols.length) _sv(K_SOL, sols);
     }
@@ -22352,10 +22353,96 @@ window.M3D = (function () {
     return html;
   }
 
+  /* ════════════════════════════════════════════════════════════════════
+     CUSTOS — uma linha por requisição, como no CNC
+     Custo externo = cotação unitária × quantidade (mesma conta do CNC).
+     Custo 3D      = material + máquina. Saving = externo − 3D.
+     A lista mostra TODAS as requisições, não só as que já têm peso e horas:
+     é aqui que se enxerga a requisição com valor absurdo e se exclui.
+     ════════════════════════════════════════════════════════════════════ */
+  let cst = { q: '', pl: '', st: '', ord: 'ext', pag: 1, susp: false };
+
+  /* Requisição que merece conferência: nome só com números (teste de
+     formulário), quantidade gigante ou custo externo total fora da curva. */
+  function suspeita(s) {
+    const c = custos(s), m = [];
+    if (/^\d+$/.test(String(s.p || '').trim())) m.push('nome só com números');
+    if (c.qt >= 10000) m.push('quantidade muito alta');
+    if (c.ext >= 1000000) m.push('custo externo acima de R$ 1 milhão');
+    return m;
+  }
+
+  function cstLista() {
+    const q = cst.q.toLowerCase();
+    const lst = sols.filter(s =>
+      (!cst.pl || s.pl === cst.pl) && (!cst.st || s.status === cst.st) && (!cst.susp || suspeita(s).length) &&
+      (!q || (String(s.id) + ' ' + (s.p || '') + ' ' + (s.sl || '')).toLowerCase().includes(q)));
+    const chave = { ext: s => custos(s).ext, sav: s => custos(s).saving, c3d: s => custos(s).total, id: s => parseInt(s.id, 10) || 0 }[cst.ord];
+    return lst.slice().sort((a, b) => chave(b) - chave(a));
+  }
+
+  function cstTabela() {
+    const lst = cstLista();
+    const tot = Math.max(1, Math.ceil(lst.length / POR_PAG));
+    if (cst.pag > tot) cst.pag = tot;
+    const pagina = lst.slice((cst.pag - 1) * POR_PAG, cst.pag * POR_PAG);
+    let fExt = 0, f3d = 0, fSav = 0;
+    lst.forEach(s => { const c = custos(s); fExt += c.ext; f3d += c.total; fSav += c.saving; });
+    const num = 'text-align:right;white-space:nowrap;';
+
+    if (!lst.length) return '<div style="text-align:center;padding:30px;color:var(--tx2);font-size:14px">Nenhuma requisição com esses filtros.</div>';
+
+    let html = `<div style="font-size:12.5px;color:var(--tx2);margin-bottom:10px">
+        <b style="color:var(--tx)">${lst.length}</b> requisição(ões) no filtro · externo <b style="color:var(--tx)">${brl(fExt)}</b> ·
+        3D <b style="color:var(--tx)">${brl(f3d)}</b> · saving <b style="color:${fSav >= 0 ? '#047857' : '#b91c1c'}">${brl(fSav)}</b></div>
+      <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:1080px"><thead><tr>` +
+      ['Nº', 'Peça', 'Planta', 'Status', 'Qtd', 'Externo unit. (R$)', 'Externo total', 'Custo 3D', 'Saving', ''].map(th).join('') +
+      '</tr></thead><tbody>' + pagina.map(s => {
+        const c = custos(s), id = esc(String(s.id)), sus = suspeita(s);
+        const cor = ST_COR[s.status] || ['#f3f4f6', '#374151'];
+        return `<tr style="${sus.length ? 'background:#fffbeb' : ''}">` +
+          td(`<b>${id}</b><div style="font-size:10.5px;color:var(--tx3)">${dtBr(s.dt)}</div>`) +
+          td(`<div style="max-width:280px;line-height:1.35">${esc(s.p) || '—'}</div><div style="font-size:10.5px;color:var(--tx3)">${esc(s.sl)}</div>` +
+             (sus.length ? `<div style="font-size:10.5px;font-weight:700;color:#b45309;margin-top:2px">⚠ conferir: ${esc(sus.join(' · '))}</div>` : '')) +
+          td(esc(s.pl) || '—') +
+          td(`<span style="font-size:11.5px;font-weight:600;padding:2px 7px;border-radius:5px;background:${cor[0]};color:${cor[1]};white-space:nowrap">${esc(s.status)}</span>`) +
+          td(`<input value="${esc(s.qt)}" type="number" onchange="M3D.editC('${id}','qt',this.value)" style="width:70px;padding:4px 6px;border:1px solid var(--border2);border-radius:5px;font-size:12.5px;font-family:inherit">`) +
+          td(`<input value="${esc(s.cotExt)}" type="number" onchange="M3D.editC('${id}','cotExt',this.value)" style="width:104px;padding:4px 6px;border:1px solid var(--border2);border-radius:5px;font-size:12.5px;font-family:inherit">`) +
+          td(c.ext ? brl(c.ext) : '—', num) +
+          td(c.total ? `${brl(c.total)}<div style="font-size:10.5px;color:var(--tx3)">unit. ${brl(c.unit)}</div>` : '<span style="color:var(--tx3)" title="Falta peso, horas, material ou impressora">sem dados</span>', num) +
+          td(c.ext ? `<b style="color:${c.saving >= 0 ? '#047857' : '#b91c1c'}">${brl(c.saving)}</b>` : '—', num) +
+          td(`<div style="display:flex;gap:5px;justify-content:flex-end">
+              <button onclick="M3D.detalhe('${id}')" title="Detalhes" style="background:#f3f0ff;color:#6d28d9;border:none;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:12px">🔍</button>
+              <button onclick="M3D.remover('${id}')" title="Excluir esta requisição" style="background:#fee2e2;color:#991b1b;border:none;border-radius:5px;padding:4px 8px;cursor:pointer;font-size:12px">🗑</button></div>`) +
+          '</tr>';
+      }).join('') + '</tbody></table></div>';
+
+    html += `<div style="display:flex;justify-content:center;align-items:center;gap:10px;margin-top:14px;font-size:13px;color:var(--tx)">
+      <button onclick="M3D.cstSet('pag',${cst.pag - 1})" ${cst.pag <= 1 ? 'disabled' : ''} style="padding:6px 12px;border:1px solid #d8dae0;background:var(--surface);border-radius:6px;cursor:pointer;${cst.pag <= 1 ? 'opacity:.4' : ''}">←</button>
+      <span>página <b>${cst.pag}</b> de <b>${tot}</b></span>
+      <button onclick="M3D.cstSet('pag',${cst.pag + 1})" ${cst.pag >= tot ? 'disabled' : ''} style="padding:6px 12px;border:1px solid #d8dae0;background:var(--surface);border-radius:6px;cursor:pointer;${cst.pag >= tot ? 'opacity:.4' : ''}">→</button>
+    </div>`;
+    return html;
+  }
+
+  /* Filtro, ordem e página trocam só a tabela — o campo de busca não perde o foco */
+  function cstSet(k, v) {
+    if (k === 'pag') cst.pag = Math.max(1, v); else { cst[k] = v; cst.pag = 1; }
+    if (k === 'susp') { render(); return; }
+    const box = document.getElementById('m3dCstLista');
+    if (box) box.innerHTML = cstTabela(); else render();
+  }
+  function editC(id, campo, val) {
+    const s = byId(id); if (!s) return;
+    s[campo] = n(val); salvarSol(); render();
+  }
+
   function viewCusto() {
     const lst = sols.filter(s => s.status !== 'Rejeitada');
-    let tMat = 0, tMaq = 0, tTot = 0, tSav = 0, comCalc = 0;
-    lst.forEach(s => { const c = custos(s); tMat += c.cMat; tMaq += c.cMaq; tTot += c.total; tSav += c.saving; if (c.total > 0) comCalc++; });
+    let tMat = 0, tMaq = 0, tTot = 0, tSav = 0, tExt = 0, comCalc = 0;
+    lst.forEach(s => { const c = custos(s); tMat += c.cMat; tMaq += c.cMaq; tTot += c.total; tSav += c.saving; tExt += c.ext; if (c.total > 0) comCalc++; });
+    const nSusp = sols.filter(s => suspeita(s).length).length;
+    const nLixo = lixo().length;
 
     const porPl = {};
     lst.forEach(s => {
@@ -22365,26 +22452,40 @@ window.M3D = (function () {
     });
 
     let html = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px">
-      ${kpi('Custo material', brl(tMat), '#1e40af')}${kpi('Custo máquina', brl(tMaq), '#6d28d9')}
+      ${kpi('Custo externo (fornecedor)', brl(tExt), '#b45309')}${kpi('Custo material', brl(tMat), '#1e40af')}${kpi('Custo máquina', brl(tMaq), '#6d28d9')}
       ${kpi('Custo total 3D', brl(tTot), '#111827')}${kpi('Saving vs. externo', brl(tSav), tSav >= 0 ? '#047857' : '#b91c1c')}
-    </div>
-    <div style="font-size:12.5px;color:var(--tx);margin-bottom:12px;background:#f5f3ff;border-left:3px solid #7c3aed;padding:10px 13px;border-radius:6px">
-      Custo material = peso/peça × qtd × preço/kg (aba Materiais). Custo máquina = horas/peça × qtd × custo/hora (aba Programação).
-      Hoje <b>${comCalc}</b> de ${lst.length} solicitações têm peso e horas preenchidos — as demais entram como zero.</div>`;
+    </div>`;
+
+    if (nSusp) html += `<div style="font-size:13px;margin-bottom:12px;background:#fffbeb;border-left:3px solid #d97706;padding:10px 13px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <span><b>⚠ ${nSusp} requisição(ões) com valores fora do normal</b> — nome só com números, quantidade gigante ou custo externo acima de R$ 1 milhão. Elas distorcem os totais: confira e corrija ou exclua.</span>
+      <button onclick="M3D.cstSet('susp',${!cst.susp})" style="background:${cst.susp ? '#d97706' : 'var(--surface)'};color:${cst.susp ? '#fff' : '#b45309'};border:1px solid #d97706;padding:6px 12px;border-radius:6px;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap">${cst.susp ? '✓ Mostrando só essas — ver todas' : 'Mostrar só essas'}</button></div>`;
+
+    html += `<div style="font-size:12.5px;color:var(--tx);margin-bottom:12px;background:#f5f3ff;border-left:3px solid #7c3aed;padding:10px 13px;border-radius:6px">
+      Custo externo = cotação unitária × qtd. Custo material = peso/peça × qtd × preço/kg (aba Materiais). Custo máquina = horas/peça × qtd × custo/hora (aba Programação).
+      Hoje <b>${comCalc}</b> de ${lst.length} requisições têm custo 3D calculado — nas demais o saving aparece igual ao custo externo.</div>`;
 
     html += card('<div style="font-size:14px;font-weight:700;margin-bottom:10px">Resumo por planta</div><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:720px"><thead><tr>' +
       ['Planta', 'Solic.', 'Peças', 'Custo 3D', 'Custo externo', 'Saving'].map(th).join('') + '</tr></thead><tbody>' +
-      Object.keys(porPl).sort().map(k => { const v = porPl[k]; return '<tr>' + td('<b>' + esc(k) + '</b>') + td(v.n) + td(v.qt) + td(brl(v.total)) + td(brl(v.ext)) +
+      Object.keys(porPl).sort().map(k => { const v = porPl[k]; return '<tr>' + td('<b>' + esc(k) + '</b>') + td(v.n) + td(v.qt.toLocaleString('pt-BR')) + td(brl(v.total)) + td(brl(v.ext)) +
         td(`<b style="color:${v.sav >= 0 ? '#047857' : '#b91c1c'}">${brl(v.sav)}</b>`) + '</tr>'; }).join('') + '</tbody></table></div>');
 
-    const comValor = lst.filter(s => custos(s).total > 0).slice(0, 200);
-    html += '<div style="margin-top:14px">' + card('<div style="font-size:14px;font-weight:700;margin-bottom:10px">Detalhe por solicitação (as que já têm peso e horas)</div>' +
-      (comValor.length ? '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:900px"><thead><tr>' +
-        ['Nº', 'Peça', 'Qtd', 'Material', 'Custo mat.', 'Custo máq.', 'Total', 'Unitário', 'Saving'].map(th).join('') + '</tr></thead><tbody>' +
-        comValor.map(s => { const c = custos(s); return '<tr>' + td('<b>' + esc(s.id) + '</b>') + td(`<div style="max-width:250px">${esc(s.p)}</div>`) + td(c.qt) +
-          td(c.kg.toFixed(3) + ' kg') + td(brl(c.cMat)) + td(brl(c.cMaq)) + td('<b>' + brl(c.total) + '</b>') + td(brl(c.unit)) +
-          td(c.ext ? `<b style="color:${c.saving >= 0 ? '#047857' : '#b91c1c'}">${brl(c.saving)}</b>` : '—') + '</tr>'; }).join('') + '</tbody></table></div>'
-        : '<div style="color:var(--tx2);font-size:13px;padding:14px 0">Nenhuma solicitação com peso e horas preenchidos ainda. Preencha na aba Solicitações para o custo aparecer aqui.</div>')) + '</div>';
+    const btnOrd = [['ext', 'Maior custo externo'], ['sav', 'Maior saving'], ['c3d', 'Maior custo 3D'], ['id', 'Mais recentes']];
+    html += '<div style="margin-top:14px">' + card(
+      `<div style="font-size:14px;font-weight:700;margin-bottom:10px">Custo por requisição</div>
+       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+         <input placeholder="🔍 buscar nº, peça ou solicitante" value="${esc(cst.q)}" oninput="M3D.cstSet('q',this.value)" style="flex:1;min-width:210px;padding:8px 11px;border:1px solid var(--border2);border-radius:7px;font-size:13px;font-family:inherit">
+         ${sel(PLANTAS, cst.pl, "M3D.cstSet('pl',this.value)", 140)}
+         ${sel(STATUS, cst.st, "M3D.cstSet('st',this.value)", 140)}
+         <select onchange="M3D.cstSet('ord',this.value)" title="Ordenar" style="width:185px;padding:4px 6px;border:1px solid var(--border2);border-radius:5px;font-size:12.5px;font-family:inherit">
+           ${btnOrd.map(([k, t]) => `<option value="${k}"${cst.ord === k ? ' selected' : ''}>${t}</option>`).join('')}</select>
+       </div><div id="m3dCstLista">${cstTabela()}</div>`) + '</div>';
+
+    if (nLixo) html += '<div style="margin-top:14px">' + card(
+      `<div style="font-size:14px;font-weight:700;margin-bottom:4px">🗑 Excluídas (${nLixo})</div>
+       <div style="font-size:12px;color:var(--tx2);margin-bottom:8px">Ficam guardadas aqui e não entram em nenhuma conta. Dá para restaurar.</div>` +
+      lixo().slice(0, 100).map(s => `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:6px 0;border-top:1px solid #f1f2f5;font-size:13px">
+         <span><b>${esc(s.id)}</b> — ${esc(s.p) || '—'} <span style="color:var(--tx3)">· ${esc(s.pl)} · externo ${brl(n(s.cotExt) * n(s.qt))}</span></span>
+         <button onclick="M3D.restaurar('${esc(String(s.id))}')" style="background:var(--surface);color:#6d28d9;border:1px solid #c4b5fd;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">↺ Restaurar</button></div>`).join('')) + '</div>';
     return html;
   }
 
@@ -22416,11 +22517,48 @@ window.M3D = (function () {
     salvarSol();
     if (campo === 'status' || campo === 'imp' || campo === 'mat') render();
   }
+  /* ── Exclusão com lixeira ──
+     A requisição excluída sai da lista e vai para a lixeira (dá para
+     restaurar). A confirmação usa uma janela do próprio app: o confirm() do
+     navegador pode estar bloqueado e aí o botão não faria nada. */
+  const K_DEL = 'cnc_sol3d_del_v1';
+  const lixo = () => _ld(K_DEL) || [];
+  let confFn = null;
+  function confirma(titulo, corpo, rotulo, fn) {
+    confFn = fn;
+    let box = document.getElementById('m3dConf');
+    if (!box) { box = document.createElement('div'); box.id = 'm3dConf'; document.body.appendChild(box); }
+    box.innerHTML = `<div onclick="if(event.target===this)M3D.confNao()" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100020;display:flex;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--surface);color:var(--tx);border-radius:12px;max-width:460px;width:100%;padding:20px;box-shadow:0 20px 50px rgba(0,0,0,.3)">
+        <div style="font-size:16px;font-weight:700;margin-bottom:8px">${titulo}</div>
+        <div style="font-size:13px;line-height:1.5;margin-bottom:16px">${corpo}</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button onclick="M3D.confNao()" style="background:var(--surface);color:var(--tx);border:1px solid var(--border2);padding:8px 15px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">Cancelar</button>
+          <button onclick="M3D.confOk()" style="background:#dc2626;color:#fff;border:none;padding:8px 15px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">${rotulo}</button>
+        </div></div></div>`;
+  }
+  function confNao() { confFn = null; const b = document.getElementById('m3dConf'); if (b) b.innerHTML = ''; }
+  function confOk() { const f = confFn; confNao(); if (f) f(); }
+
   function remover(id) {
     const s = byId(id); if (!s) return;
-    if (!confirm('Remover a solicitação ' + s.id + '?')) return;
-    sols = sols.filter(x => String(x.id) !== String(id));
-    salvarSol(); fecharDet(); render();
+    const c = custos(s);
+    confirma('Excluir a requisição ' + esc(s.id) + '?',
+      `<b>${esc(s.p) || '—'}</b><br>${esc(s.pl) || 'sem planta'} · ${c.qt.toLocaleString('pt-BR')} peça(s) · custo externo ${brl(c.ext)}<br><br>
+       Ela sai da lista e de todos os totais. Fica na lixeira, no fim da aba Custos, e pode ser restaurada.`,
+      'Excluir', () => {
+        const l = lixo().filter(x => String(x.id) !== String(s.id));
+        l.unshift(Object.assign({}, s, { _del: Date.now() }));
+        _sv(K_DEL, l.slice(0, 500));
+        sols = sols.filter(x => String(x.id) !== String(id));
+        salvarSol(); fecharDet(); render();
+      });
+  }
+  function restaurar(id) {
+    const l = lixo(), s = l.find(x => String(x.id) === String(id)); if (!s) return;
+    _sv(K_DEL, l.filter(x => String(x.id) !== String(id)));
+    if (!byId(id)) { const r = Object.assign({}, s); delete r._del; sols.push(r); sols.sort((a, b) => (parseInt(b.id, 10) || 0) - (parseInt(a.id, 10) || 0)); salvarSol(); }
+    render();
   }
   function nova() {
     const p = prompt('Peça / descrição:', ''); if (p === null) return;
@@ -22453,7 +22591,8 @@ window.M3D = (function () {
     const alvo = usarBkp ? bkp.sols : (semente.length ? semente : (temBkp ? bkp.sols : []));
     if (!alvo.length) { alert('A origem escolhida está vazia.'); return; }
     const porId = {};
-    alvo.forEach(x => { porId[String(x.id)] = x; });
+    const fora = new Set(lixo().map(x => String(x.id)));          // excluída de propósito não volta
+    alvo.forEach(x => { if (!fora.has(String(x.id))) porId[String(x.id)] = x; });
     sols.forEach(x => { porId[String(x.id)] = x; });
     sols = Object.keys(porId).map(k => porId[k]).sort((a, b) => (parseInt(b.id, 10) || 0) - (parseInt(a.id, 10) || 0));
     _sv(K_SOL, sols);
@@ -22497,7 +22636,7 @@ window.M3D = (function () {
           const PR = v => { const t = T(v).toLowerCase(); return t.indexOf('alta') === 0 ? 'Alta' : t.indexOf('m') === 0 ? 'Média' : t.indexOf('baixa') === 0 ? 'Baixa' : ''; };
           try { if (sols.length) _sv(K_BKP, { em: Date.now(), sols: sols.slice() }); } catch (e) {}
           const antesDaImport = sols.length;
-          const existe = new Set(sols.map(x => String(x.id)));
+          const existe = new Set(sols.map(x => String(x.id)).concat(lixo().map(x => String(x.id))));
           let add = 0, semNumero = 0;
 
           /* As colunas mudam de planilha para planilha, então o de-para é pelo
@@ -22588,7 +22727,7 @@ window.M3D = (function () {
     salvarImp(); render();
   }
 
-  return { mount, render, tab, pagina, filtro: filtroSet, edit, remover, nova, importar, recuperar,
+  return { mount, render, tab, pagina, filtro: filtroSet, edit, remover, restaurar, confOk, confNao, cstSet, editC, nova, importar, recuperar,
            detalhe, fecharDet, editMat, novoMat, removerMat, editImp, novaImp,
            _dados: () => ({ sols: sols, mats: mats, imps: imps }) };
 })();
@@ -22597,6 +22736,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 02/10/2026 08:29</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 02/10/2026 08:49</div>
 </body>
 </html>
