@@ -22110,6 +22110,22 @@ window.M3D = (function () {
 
   const _ld = k => { try { const v = JSON.parse(localStorage.getItem(k)); return Array.isArray(v) ? v : null; } catch (e) { return null; } };
   const _sv = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn('[3D] save', k, e); } };
+  const K_BKP = 'cnc_sol3d_bkp_v1';
+  /* Guarda a última lista boa antes de gravar e recusa gravar lista vazia por
+     cima de uma lista cheia. Lista vazia é "válida" para o app, então uma vez
+     gravada ela escondia para sempre a base embutida no arquivo. */
+  function _svSol(lista){
+    try {
+      const antes = _ld(K_SOL);
+      if (Array.isArray(antes) && antes.length && (!Array.isArray(lista) || !lista.length)) {
+        console.warn('[3D] recusei gravar lista vazia por cima de ' + antes.length + ' solicitações');
+        return false;
+      }
+      if (Array.isArray(lista) && lista.length) _sv(K_BKP, { em: Date.now(), sols: lista });
+    } catch (e) {}
+    _sv(K_SOL, lista);
+    return true;
+  }
 
   let sols = [], mats = [], imps = [];
   let aba = 'sol', pag = 1, detId = null;
@@ -22117,6 +22133,18 @@ window.M3D = (function () {
 
   function carregar() {
     sols = _ld(K_SOL);
+    if (Array.isArray(sols) && !sols.length) {
+      /* Lista vazia no navegador quase sempre é acidente: tenta o backup e,
+         se não houver, cai na base embutida no arquivo. */
+      try {
+        const bkp = JSON.parse(localStorage.getItem(K_BKP) || 'null');
+        if (bkp && Array.isArray(bkp.sols) && bkp.sols.length) {
+          sols = bkp.sols;
+          _sv(K_SOL, sols);
+          console.log('[3D] lista vazia — recuperada do backup com ' + sols.length + ' solicitações');
+        } else sols = null;
+      } catch (e) { sols = null; }
+    }
     if (!sols) {
       let semente = [];
       try {
@@ -22134,7 +22162,7 @@ window.M3D = (function () {
     mats = _ld(K_MAT); if (!mats) { mats = MAT_SEED.slice(); _sv(K_MAT, mats); }
     imps = _ld(K_IMP); if (!imps) { imps = IMP_SEED.slice(); _sv(K_IMP, imps); }
   }
-  const salvarSol = () => _sv(K_SOL, sols);
+  const salvarSol = () => _svSol(sols);
   const salvarMat = () => _sv(K_MAT, mats);
   const salvarImp = () => _sv(K_IMP, imps);
 
@@ -22214,6 +22242,7 @@ window.M3D = (function () {
         ${sel(PRIOS, filtro.pr, "M3D.filtro('pr',this.value)", 110)}
         <button onclick="M3D.nova()" style="background:#7c3aed;color:#fff;border:none;padding:8px 15px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">＋ Nova</button>
         <input type="file" id="m3dFile" accept=".xlsx,.xls" style="display:none" onchange="M3D.importar(this.files[0]);this.value=''">
+        <button onclick="M3D.recuperar()" title="Volta a lista ao último estado salvo (ou à base do arquivo)" style="background:var(--surface);color:var(--text);border:1px solid var(--line);padding:8px 13px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">↺ Recuperar lista</button>
         <button onclick="document.getElementById('m3dFile').click()" title="Importar o export do Forms de 3D (.xlsx)" style="background:var(--surface);color:#7c3aed;border:1px solid #c4b5fd;padding:8px 13px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer">⬆ Importar Forms</button>
       </div>`;
 
@@ -22404,6 +22433,34 @@ window.M3D = (function () {
   }
 
   /* importa o export do Forms de 3D (.xlsx) — só acrescenta o que ainda não existe */
+  /* Repõe a lista a partir do backup mais recente ou da base embutida no
+     arquivo. Nunca apaga: o que está na tela tem prioridade na junção. */
+  function recuperar(){
+    let bkp = null;
+    try { bkp = JSON.parse(localStorage.getItem(K_BKP) || 'null'); } catch (e) {}
+    const temBkp = bkp && Array.isArray(bkp.sols) && bkp.sols.length;
+    let semente = [];
+    try {
+      const el = document.getElementById('dataSol3dSeed');
+      if (el) semente = JSON.parse(el.textContent) || [];
+    } catch (e) {}
+    const op = [];
+    if (temBkp) op.push('· backup de ' + new Date(bkp.em).toLocaleString('pt-BR') + ' — ' + bkp.sols.length + ' solicitações');
+    if (semente.length) op.push('· base do arquivo — ' + semente.length + ' solicitações');
+    if (!op.length) { alert('Não há de onde recuperar: sem backup e sem base no arquivo.'); return; }
+    const usarBkp = temBkp && confirm('RECUPERAR A LISTA DE SOLICITAÇÕES\n\nNa tela agora: ' + sols.length + '\n\n' + op.join('\n')
+      + '\n\nOK usa o backup. Cancelar usa a base do arquivo.');
+    const alvo = usarBkp ? bkp.sols : (semente.length ? semente : (temBkp ? bkp.sols : []));
+    if (!alvo.length) { alert('A origem escolhida está vazia.'); return; }
+    const porId = {};
+    alvo.forEach(x => { porId[String(x.id)] = x; });
+    sols.forEach(x => { porId[String(x.id)] = x; });
+    sols = Object.keys(porId).map(k => porId[k]).sort((a, b) => (parseInt(b.id, 10) || 0) - (parseInt(a.id, 10) || 0));
+    _sv(K_SOL, sols);
+    pag = 1; render();
+    alert('✓ Lista recuperada: ' + sols.length + ' solicitações.');
+  }
+
   function importar(file) {
     if (!file) return;
     if (!window.ensureXLSX) { alert('Leitor de Excel indisponível nesta página.'); return; }
@@ -22413,8 +22470,24 @@ window.M3D = (function () {
       fr.onload = function (e) {
         try {
           const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array', cellDates: true });
-          const linhas = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
-          if (linhas.length < 2) { alert('A planilha está vazia.'); return; }
+          /* O arquivo pode ter muitas abas (painel, rateio, cadastro…). Procura
+             a que tem cara de export do Forms de 3D em vez de pegar a primeira
+             e importar lixo. */
+          const limpa = x => String(x == null ? '' : x).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
+          const PISTAS = ['datadesolicitacao', 'nomedapeca', 'requisitante', 'quantid', 'quantidade', 'materialutilizado', 'nrequisicao'];
+          let linhas = null, abaUsada = '';
+          for (const nome of wb.SheetNames) {
+            const L = XLSX.utils.sheet_to_json(wb.Sheets[nome], { header: 1, defval: '' });
+            if (L.length < 2) continue;
+            const cab = (L[0] || []).map(limpa);
+            const acertos = PISTAS.filter(p => cab.some(c => c.indexOf(p) >= 0)).length;
+            if (acertos >= 3) { linhas = L; abaUsada = nome; break; }
+          }
+          if (!linhas) {
+            alert('Não encontrei nesta planilha uma aba com o formato do Forms de 3D.\n\nAbas do arquivo: ' + wb.SheetNames.join(' | ')
+              + '\n\nA aba precisa ter cabeçalho com Data de solicitação, Nome da peça, Requisitante e Quantidade.');
+            return;
+          }
           const T = v => String(v == null ? '' : v).replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
           const D = v => {
             if (v instanceof Date) return v.toISOString().slice(0, 10);
@@ -22422,22 +22495,73 @@ window.M3D = (function () {
             return m ? m[3] + '-' + m[2] + '-' + m[1] : t.slice(0, 10);
           };
           const PR = v => { const t = T(v).toLowerCase(); return t.indexOf('alta') === 0 ? 'Alta' : t.indexOf('m') === 0 ? 'Média' : t.indexOf('baixa') === 0 ? 'Baixa' : ''; };
+          try { if (sols.length) _sv(K_BKP, { em: Date.now(), sols: sols.slice() }); } catch (e) {}
+          const antesDaImport = sols.length;
           const existe = new Set(sols.map(x => String(x.id)));
-          let add = 0;
+          let add = 0, semNumero = 0;
+
+          /* As colunas mudam de planilha para planilha, então o de-para é pelo
+             NOME do cabeçalho, não pela posição. Cada campo aceita os nomes que
+             já apareceram nos exports do Forms e na planilha de controle. */
+          const cab = (linhas[0] || []).map(limpa);
+          const col = (...nomes) => {
+            for (const n of nomes) {
+              const alvo = limpa(n);
+              const k = cab.findIndex(c => c === alvo);
+              if (k >= 0) return k;
+            }
+            for (const n of nomes) {                       // tentativa por "começa com"
+              const alvo = limpa(n);
+              const k = cab.findIndex(c => c && alvo && c.indexOf(alvo) === 0);
+              if (k >= 0) return k;
+            }
+            return -1;
+          };
+          const C = {
+            id:    col('Requisição', 'N° REQUISIÇÃO', 'Nº Requisição', 'ID', 'Nº', 'Solicitação'),
+            dt:    col('Data de solicitação', 'DATA DE SOLICITAÇÃO', 'Data'),
+            dte:   col('Data de entrega estimada', 'ENTREGA ESTIMADA'),
+            p:     col('Nome da peça', 'NOME DA PEÇA', 'Peça'),
+            sl:    col('Requisitante', 'NOME SOLIC.', 'Solicitante'),
+            em:    col('E-mail', 'Email'),
+            qt:    col('Quantidade', 'QUANTID.', 'Qtd'),
+            mat:   col('Material utilizado', 'MATERIAL', 'Material'),
+            sp3d:  col('Cód SAP peça 3D', 'CÓD. SAP 3D', 'Cód SAP 3D'),
+            sp:    col('Cód SAP', 'Código SAP'),
+            st:    col('Status de produção', 'Status'),
+            obs:   col('Informações adicionais', 'INFOS TÉCNICAS', 'Observação', 'Obs'),
+            pl:    col('Planta', 'Site', 'Fábrica'),
+            pr:    col('Prioridade'),
+            tec:   col('Equipamento', 'Máquina', 'Linha')
+          };
+          if (C.id < 0 || C.p < 0) {
+            alert('A aba "' + abaUsada + '" não tem as colunas mínimas.\n\nPreciso de uma coluna de número da requisição e outra de nome da peça.\n\nCabeçalho encontrado: ' + (linhas[0] || []).join(' | '));
+            return;
+          }
+          const V = (r, k) => (k >= 0 ? r[k] : '');
+
           for (let i = 1; i < linhas.length; i++) {
-            const r = linhas[i]; if (!r || r[0] === '' || r[0] == null) continue;
-            const id = T(r[0]); if (!id || existe.has(id)) continue;
-            const sp = T(r[10]), sp3 = T(r[11]);
-            sols.push({ id: id, dt: D(r[2]) || D(r[1]), em: T(r[3]), sl: T(r[5]) || T(r[4]), pl: T(r[6]), ar: T(r[7]),
-              os: T(r[8]), ct: T(r[9]), sp: sp === '0' ? '' : sp, sp3d: sp3 === '0' ? '' : sp3, cotExt: n(r[12]),
-              p: T(r[13]), qt: n(r[14]) || 1, tec: T(r[15]), pr: PR(r[16]), div: T(r[17]) || T(r[18]),
-              status: 'Pendente', mat: '', peso: 0, horas: 0, imp: '', obs: '' });
+            const r = linhas[i]; if (!r) continue;
+            const id = T(V(r, C.id)).replace(/\.0$/, '');
+            if (!id || !/^\d+$/.test(id)) { if (T(V(r, C.p))) semNumero++; continue; }
+            if (existe.has(id)) continue;
+            const stTxt = T(V(r, C.st)).toLowerCase();
+            const status = stTxt.indexOf('entreg') >= 0 || stTxt.indexOf('conclu') >= 0 ? 'Concluída'
+                         : stTxt.indexOf('impress') >= 0 || stTxt.indexOf('produ') >= 0 ? 'Em impressão' : 'Pendente';
+            sols.push({
+              id: id, dt: D(V(r, C.dt)), dte: D(V(r, C.dte)), em: T(V(r, C.em)), sl: T(V(r, C.sl)),
+              pl: T(V(r, C.pl)), ar: '', os: '', ct: '', sp: T(V(r, C.sp)), sp3d: T(V(r, C.sp3d)),
+              cotExt: 0, p: T(V(r, C.p)), qt: n(V(r, C.qt)) || 1, tec: T(V(r, C.tec)), pr: PR(V(r, C.pr)),
+              div: '', status: status, mat: T(V(r, C.mat)), peso: 0, horas: 0, imp: '', obs: T(V(r, C.obs))
+            });
             existe.add(id); add++;
           }
-          if (!add) { alert('Nenhuma solicitação nova — todas as da planilha já estão aqui.'); return; }
+          if (!add) { alert('Nenhuma solicitação nova na aba "' + abaUsada + '" — todas já estão aqui.'); return; }
           sols.sort((a, b) => (parseInt(b.id, 10) || 0) - (parseInt(a.id, 10) || 0));
           salvarSol(); pag = 1; render();
-          alert(add + ' solicitação(ões) importada(s) do Forms de 3D.');
+          alert(add + ' solicitação(ões) importada(s) da aba "' + abaUsada + '".'
+            + (semNumero ? '\n' + semNumero + ' linha(s) sem número de requisição ficaram de fora.' : '') + '\n\nAntes: ' + antesDaImport + ' · agora: ' + sols.length
+            + '\n\nSe algo sair errado, o botão ↺ Recuperar lista volta ao estado anterior.');
         } catch (err) { console.error('[3D] import', err); alert('Não consegui ler a planilha: ' + (err.message || err)); }
       };
       fr.readAsArrayBuffer(file);
@@ -22464,7 +22588,7 @@ window.M3D = (function () {
     salvarImp(); render();
   }
 
-  return { mount, render, tab, pagina, filtro: filtroSet, edit, remover, nova, importar,
+  return { mount, render, tab, pagina, filtro: filtroSet, edit, remover, nova, importar, recuperar,
            detalhe, fecharDet, editMat, novoMat, removerMat, editImp, novaImp,
            _dados: () => ({ sols: sols, mats: mats, imps: imps }) };
 })();
@@ -22473,6 +22597,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 01/10/2026 17:00</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 02/10/2026 08:29</div>
 </body>
 </html>
