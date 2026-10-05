@@ -12737,6 +12737,7 @@ const FB = (function() {
        /drawings           ← desenhos (imagens base64)
   */
   function save(path, value) {
+    if (path === '/sol_mods') value = _encObj(value);
     if (!db || !connected) {
       // Salva pra enviar quando voltar online
       return Promise.resolve(false);
@@ -12764,6 +12765,14 @@ const FB = (function() {
 
   // Gravação intencionalmente destrutiva (substitui o nó inteiro).
   let _rawWrite = false;
+  /* O Firebase recusa chave com . # $ [ ] / — e os nºs desdobrados (915.1,
+     274.8) têm ponto. A gravação dessas solicitações falhava em silêncio e,
+     no recarregamento, o servidor devolvia o estado antigo: o "Aprovado"
+     voltava para "Pendente". As chaves de /sol_mods vão codificadas. */
+  const _encK = k => String(k).replace(/[.#$\[\]\/%]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+  const _decK = k => String(k).replace(/%([0-9A-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+  const _encObj = o => { if (!o || typeof o !== 'object' || Array.isArray(o)) return o; const r = {}; Object.keys(o).forEach(k => { r[_encK(k)] = o[k]; }); return r; };
+  const _decObj = o => { if (!o || typeof o !== 'object' || Array.isArray(o)) return o; const r = {}; Object.keys(o).forEach(k => { r[_decK(k)] = o[k]; }); return r; };
   function saveRaw(path, value) {
     if (!db || !connected) return Promise.resolve(false);
     _rawWrite = true;
@@ -12864,8 +12873,16 @@ const FB = (function() {
       return;
     }
     _stats.writes++;
-    const fullPath = pending.path + '/' + pending.key;
-    db.ref(fullPath).set(pending.value).then(() => {
+    const fullPath = pending.path + '/' + _encK(pending.key);
+    let _ref;
+    try { _ref = db.ref(fullPath); }
+    catch (e) {
+      _stats.failedWrites++;
+      console.error('[FB] ❌ saveKey caminho inválido:', fullPath, e);
+      if (typeof toast === 'function') toast('❌ Não consegui salvar a solicitação ' + pending.key + ' no servidor', 'error', 6000);
+      return;
+    }
+    _ref.set(pending.value).then(() => {
       markSync();
       console.log('[FB] saveKey OK:', fullPath);
     }).catch(e => {
@@ -12899,7 +12916,7 @@ const FB = (function() {
       if (_suppressListeners) return;
       _stats.reads++;
       markSync();
-      const val = snap.val();
+      const val = path === '/sol_mods' ? _decObj(snap.val()) : snap.val();
       try { callback(val); } catch (e) { console.warn('[FB] listener erro:', e); }
     }, err => {
       _stats.failedReads++;
@@ -12914,7 +12931,7 @@ const FB = (function() {
   function loadAll() {
     if (!db) return Promise.resolve(null);
     _stats.reads++;
-    return db.ref('/').once('value').then(snap => { markSync(); return snap.val() || {}; })
+    return db.ref('/').once('value').then(snap => { markSync(); const v = snap.val() || {}; if (v.sol_mods) v.sol_mods = _decObj(v.sol_mods); return v; })
       .catch(e => { _stats.failedReads++; reportError('loadAll', e); return null; });
   }
 
@@ -12942,7 +12959,6 @@ const FB_KEY_MAP = {
   'cnc_fn_budgets_v1':    '/budgets',
   'cnc_fn_fixed_v1':      '/fixed_costs',
   'cnc_os_config_v1':     '/config',
-  'cnc_sol3d_v1':         '/sol3d',
   'cnc_mat3d_v1':         '/mat3d',
   'cnc_imp3d_v1':         '/imp3d'
 };
@@ -14700,7 +14716,7 @@ const SOL_NEW_KEY = 'cnc_sol_new_v1';  // registros criados via "Nova solicitaç
 const SOL_FB_PATH = 'cnc_planner/solicitacoes_mods';
 
 function _loadMods(){ try{ return JSON.parse(localStorage.getItem(SOL_MODS_KEY))||{}; } catch{ return {}; } }
-function _saveMods(m){ try{ localStorage.setItem(SOL_MODS_KEY, JSON.stringify(m)); } catch(e){} }
+function _saveMods(m){ try{ localStorage.setItem(SOL_MODS_KEY, JSON.stringify(m)); } catch(e){ console.error('[Sol] não consegui gravar as alterações neste navegador:', e); if (typeof toast === 'function') toast('⚠ Armazenamento do navegador cheio — a alteração foi enviada ao servidor, mas não ficou gravada neste computador', 'error', 7000); } }
 function _loadNewRecs(){ try{ return JSON.parse(localStorage.getItem(SOL_NEW_KEY))||[]; } catch{ return []; } }
 function _saveNewRecs(arr){ try{ localStorage.setItem(SOL_NEW_KEY, JSON.stringify(arr)); } catch(e){} }
 /* Remove registros com ID repetido de um array, mantendo SEMPRE a primeira
@@ -14780,7 +14796,8 @@ function _persistRec(r){
     dtp: r.dtp,  // ← data de produção (YYYY-MM-DD)
     dem: r.dem,  // ← data de entrega do material (YYYY-MM-DD)
     savingMonth: r._savingMonth || '',  // ← mês alocado (yyyy-mm), vazio = pool
-    _updatedAt: new Date().toISOString()
+    _updatedAt: new Date().toISOString(),
+    _ts: Date.now()
   };
   // Preserva valores antigos se existiam e o novo não foi setado
   if (r.cu === undefined) delete m[r.id].cu;
@@ -20638,7 +20655,6 @@ async function fbBootstrap() {
     '/budgets':      'cnc_fn_budgets_v1',
     '/fixed_costs':  'cnc_fn_fixed_v1',
     '/config':       'cnc_os_config_v1',
-    '/sol3d':        'cnc_sol3d_v1',
     '/mat3d':        'cnc_mat3d_v1',
     '/imp3d':        'cnc_imp3d_v1'
   };
@@ -20649,7 +20665,24 @@ async function fbBootstrap() {
     const serverVal = serverData ? serverData[fbKey] : null;
     const localVal = localStorage.getItem(lsKey);
 
-    if (serverVal !== null && serverVal !== undefined) {
+    if (fbPath === '/sol_mods' && serverVal && typeof serverVal === 'object' && !Array.isArray(serverVal)) {
+      /* Alterações das solicitações: o servidor NÃO passa por cima do que foi
+         editado aqui e ainda não chegou lá. Fica a versão mais nova de cada
+         solicitação; o que só existe neste navegador (ou é mais novo) é
+         mantido e reenviado. Antes, um "Aprovado" que não tinha subido era
+         trocado pelo "Pendente" antigo do servidor a cada recarregamento. */
+      const origSet = Object.getPrototypeOf(localStorage).setItem;
+      let localObj = {}; try { localObj = JSON.parse(localVal || '{}') || {}; } catch (e) {}
+      const merged = Object.assign({}, serverVal), reenviar = [];
+      Object.keys(localObj).forEach(k => {
+        const l = localObj[k], sv = serverVal[k];
+        if (!l || typeof l !== 'object') return;
+        if (!sv || (l._ts || 0) > (sv._ts || 0)) { merged[k] = l; reenviar.push(k); }
+      });
+      origSet.call(localStorage, lsKey, JSON.stringify(merged));
+      if (reenviar.length && FB.saveKey) reenviar.slice(0, 400).forEach((k, i) => FB.saveKey('/sol_mods', k, merged[k], 300 + i * 25));
+      console.log('[FB] Baixado e mesclado: /sol_mods —', reenviar.length, 'alteração(ões) local(is) mantida(s) e reenviada(s)');
+    } else if (serverVal !== null && serverVal !== undefined) {
       // Servidor tem dados — usa eles (sobrescreve local)
       // Bypassa o setItem interceptado pra evitar re-upload
       const origSet = Object.getPrototypeOf(localStorage).setItem;
@@ -22298,20 +22331,41 @@ window.M3D = (function () {
 
   const _ld = k => { try { const v = JSON.parse(localStorage.getItem(k)); return Array.isArray(v) ? v : null; } catch (e) { return null; } };
   const _sv = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn('[3D] save', k, e); } };
-  const K_BKP = 'cnc_sol3d_bkp_v2';
-  /* Guarda a última lista boa antes de gravar e recusa gravar lista vazia por
-     cima de uma lista cheia. Lista vazia é "válida" para o app, então uma vez
-     gravada ela escondia para sempre a base embutida no arquivo. */
-  function _svSol(lista){
+  /* ── Armazenamento enxuto ──
+     A base (2.200+ linhas da planilha) já vem dentro do arquivo. No navegador
+     fica só a DIFERENÇA: os campos alterados de cada linha e as linhas novas.
+     Antes a lista inteira era gravada duas vezes (lista + backup), cerca de
+     2 milhões de caracteres dos ~5 milhões que o navegador oferece ao app
+     todo — o bastante para outras gravações começarem a falhar. */
+  let _semente = null;
+  function lerSemente() {
+    if (_semente) return _semente;
+    let semente = [];
     try {
-      const antes = _ld(K_SOL);
-      if (Array.isArray(antes) && antes.length && (!Array.isArray(lista) || !lista.length)) {
-        console.warn('[3D] recusei gravar lista vazia por cima de ' + antes.length + ' solicitações');
-        return false;
+      const el = document.getElementById('dataSol3dSeed');
+      if (el) {
+        semente = JSON.parse(el.textContent) || [];
+        const padrao = {"req":"","dte":"","dtp":"","tec":"","sl":"","em":"","pl":"","ar":"","os":"","ct":"","sp":"","sp3d":"","qt":1,"peso":0,"cotExt":0,"c3d":0,"mat":"PA12","torre":"","proj":"Projeto","pilar":"","div":"","obs":"","pr":"","horas":0,"imp":"","status":"Concluída"};   // campos vazios retirados do arquivo, repostos aqui
+        semente.forEach(r => { for (const k in padrao) if (r[k] === undefined) r[k] = padrao[k]; });
       }
-      if (Array.isArray(lista) && lista.length) _sv(K_BKP, { em: Date.now(), sols: lista });
-    } catch (e) {}
-    _sv(K_SOL, lista);
+    } catch (e) { console.warn('[3D] semente:', e); }
+    _semente = semente;
+    return semente;
+  }
+  function _svSol(lista){
+    if (!Array.isArray(lista)) return false;
+    const base = {}; lerSemente().forEach(r => { base[String(r.id)] = r; });
+    if (!lista.length && Object.keys(base).length) { console.warn('[3D] recusei gravar lista vazia'); return false; }
+    const mod = {}, novos = [];
+    lista.forEach(s => {
+      const o = base[String(s.id)];
+      if (!o) { novos.push(s); return; }
+      let d = null;
+      for (const k in s) if (s[k] !== o[k] && !(s[k] == null && o[k] == null)) { (d = d || {})[k] = s[k]; }
+      if (d) mod[String(s.id)] = d;
+    });
+    try { localStorage.setItem(K_SOL, JSON.stringify({ f: 2, mod: mod, novos: novos })); }
+    catch (e) { console.warn('[3D] save', e); alert('Não consegui gravar a alteração do 3D neste navegador (armazenamento cheio).'); return false; }
     return true;
   }
 
@@ -22320,33 +22374,18 @@ window.M3D = (function () {
   let filtro = { q: '', pl: '', st: '', pr: '' };
 
   function carregar() {
-    sols = _ld(K_SOL);
-    if (Array.isArray(sols) && !sols.length) {
-      /* Lista vazia no navegador quase sempre é acidente: tenta o backup e,
-         se não houver, cai na base embutida no arquivo. */
-      try {
-        const bkp = JSON.parse(localStorage.getItem(K_BKP) || 'null');
-        if (bkp && Array.isArray(bkp.sols) && bkp.sols.length) {
-          sols = bkp.sols;
-          _sv(K_SOL, sols);
-          console.log('[3D] lista vazia — recuperada do backup com ' + sols.length + ' solicitações');
-        } else sols = null;
-      } catch (e) { sols = null; }
-    }
-    if (!sols) {
-      let semente = [];
-      try {
-        const el = document.getElementById('dataSol3dSeed');
-        if (el) {
-          semente = JSON.parse(el.textContent) || [];
-          const padrao = {"req":"","dte":"","dtp":"","tec":"","sl":"","em":"","pl":"","ar":"","os":"","ct":"","sp":"","sp3d":"","qt":1,"peso":0,"cotExt":0,"c3d":0,"mat":"PA12","torre":"","proj":"Projeto","pilar":"","div":"","obs":"","pr":"","horas":0,"imp":"","status":"Concluída"};   // campos vazios retirados do arquivo, repostos aqui
-          semente.forEach(r => { for (const k in padrao) if (r[k] === undefined) r[k] = (padrao[k] === '[]') ? [] : padrao[k]; });
-        }
-      }
-      catch (e) { console.warn('[3D] semente:', e); }
-      { const fora = new Set((_ld('cnc_sol3d_del_v2') || []).map(x => String(x.id))); semente = semente.filter(x => !fora.has(String(x.id))); }
-      sols = semente.sort(ordena);
-      if (sols.length) _sv(K_SOL, sols);
+    // libera o espaço ocupado pelos formatos antigos (lista inteira + backups)
+    try { ['cnc_sol3d_bkp_v2', 'cnc_sol3d_bkp_v1', 'cnc_sol3d_v1'].forEach(k => localStorage.removeItem(k)); } catch (e) {}
+    const fora = new Set((_ld('cnc_sol3d_del_v2') || []).map(x => String(x.id)));
+    let g = null; try { g = JSON.parse(localStorage.getItem(K_SOL)); } catch (e) {}
+    if (Array.isArray(g) && g.length) {
+      sols = g.filter(x => x && !fora.has(String(x.id)));      // formato antigo (lista inteira): mantém as edições e regrava enxuto
+      sols.sort(ordena); _svSol(sols);
+    } else {
+      const mod = (g && g.f === 2 && g.mod) || {}, novos = (g && g.f === 2 && Array.isArray(g.novos)) ? g.novos : [];
+      sols = lerSemente().filter(r => !fora.has(String(r.id))).map(r => mod[String(r.id)] ? Object.assign({}, r, mod[String(r.id)]) : Object.assign({}, r));
+      novos.forEach(x => { if (x && !fora.has(String(x.id)) && !sols.some(y => String(y.id) === String(x.id))) sols.push(x); });
+      sols.sort(ordena);
     }
     mats = _ld(K_MAT); if (!mats) { mats = MAT_SEED.slice(); _sv(K_MAT, mats); }
     imps = _ld(K_IMP); if (!imps) { imps = IMP_SEED.slice(); _sv(K_IMP, imps); }
@@ -22780,31 +22819,12 @@ window.M3D = (function () {
   /* importa o export do Forms de 3D (.xlsx) — só acrescenta o que ainda não existe */
   /* Repõe a lista a partir do backup mais recente ou da base embutida no
      arquivo. Nunca apaga: o que está na tela tem prioridade na junção. */
+  /* Recarrega a lista a partir da base do arquivo + o que foi alterado aqui.
+     Com o armazenamento enxuto a base nunca se perde, então isto serve só
+     para refazer a tela se algo parecer fora do lugar. */
   function recuperar(){
-    let bkp = null;
-    try { bkp = JSON.parse(localStorage.getItem(K_BKP) || 'null'); } catch (e) {}
-    const temBkp = bkp && Array.isArray(bkp.sols) && bkp.sols.length;
-    let semente = [];
-    try {
-      const el = document.getElementById('dataSol3dSeed');
-      if (el) semente = JSON.parse(el.textContent) || [];
-    } catch (e) {}
-    const op = [];
-    if (temBkp) op.push('· backup de ' + new Date(bkp.em).toLocaleString('pt-BR') + ' — ' + bkp.sols.length + ' solicitações');
-    if (semente.length) op.push('· base do arquivo — ' + semente.length + ' solicitações');
-    if (!op.length) { alert('Não há de onde recuperar: sem backup e sem base no arquivo.'); return; }
-    const usarBkp = temBkp && confirm('RECUPERAR A LISTA DE SOLICITAÇÕES\n\nNa tela agora: ' + sols.length + '\n\n' + op.join('\n')
-      + '\n\nOK usa o backup. Cancelar usa a base do arquivo.');
-    const alvo = usarBkp ? bkp.sols : (semente.length ? semente : (temBkp ? bkp.sols : []));
-    if (!alvo.length) { alert('A origem escolhida está vazia.'); return; }
-    const porId = {};
-    const fora = new Set(lixo().map(x => String(x.id)));          // excluída de propósito não volta
-    alvo.forEach(x => { if (!fora.has(String(x.id))) porId[String(x.id)] = x; });
-    sols.forEach(x => { porId[String(x.id)] = x; });
-    sols = Object.keys(porId).map(k => porId[k]).sort(ordena);
-    _sv(K_SOL, sols);
-    pag = 1; render();
-    alert('✓ Lista recuperada: ' + sols.length + ' solicitações.');
+    carregar(); pag = 1; render();
+    alert('✓ Lista recarregada: ' + sols.length + ' linhas (base do arquivo + alterações deste navegador).');
   }
 
   /* ── Leitura da planilha de controle (aba Manufatura_Aditiva) ──
@@ -22898,7 +22918,6 @@ window.M3D = (function () {
           if (!linhas) { alert('Não encontrei a aba Manufatura_Aditiva nesta planilha.\n\nAbas do arquivo: ' + wb.SheetNames.join(' | ')); return; }
           const res = lerPlanilha(linhas);
           if (res.erro) { alert('Aba "' + abaUsada + '": ' + res.erro); return; }
-          try { if (sols.length) _sv(K_BKP, { em: Date.now(), sols: sols.slice() }); } catch (e2) {}
           const antes = sols.length, fora = new Set(lixo().map(x => String(x.id)));
           const porId = {}; sols.forEach(s => { porId[String(s.id)] = s; });
           let add = 0, atual = 0;
@@ -22953,6 +22972,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 05/10/2026 15:54</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 05/10/2026 16:49</div>
 </body>
 </html>
