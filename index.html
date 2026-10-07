@@ -4786,14 +4786,36 @@ function __apontComparativo(R, w, ctx){
       const pcsPlanDe = (o) => {
         const it = plano.find(x => normRef(x.ref) === o.k) || {};
         if (it.pcs != null && it.pcs !== '') return Number(it.pcs);
-        const qr = (reqDe(o.ref) || {}).qtd, pd = window.__apontPadrao ? window.__apontPadrao(o.ref, maq, qr) : null;
-        return window.__apontPecasPlan ? window.__apontPecasPlan(o.ref, maq, planMin[o.k], qr, pd || planMin[o.k]) : null;
+        /* Sem a quantidade digitada no card, só se estima quando existe o tempo
+           total da peça (Biblioteca de Desenhos ou requisição). Sem isso NÃO se
+           supõe que o lote inteiro cabia no turno — senão um lote de 105 peças
+           planejado em parte do dia faria 33 peças boas parecerem 31%. */
+        const rq = reqDe(o.ref) || {};
+        const total = (window.__apontPadrao ? window.__apontPadrao(o.ref, maq, rq.qtd) : 0) || Number(rq[maq === 'CENTRO' ? 'centro' : 'torno']) || 0;
+        if (!total || !window.__apontPecasPlan) return null;
+        return window.__apontPecasPlan(o.ref, maq, planMin[o.k], rq.qtd, total);
       };
       const cedo = new Set();
       ordem.forEach(o => { const p = planMin[o.k], rl = realMin[o.k] || 0, pp = pcsPlanDe(o);
-        if (pp > 0 && (realPcs[o.k] || 0) >= pp && rl > 0 && rl < p) cedo.add(o.k); });
+        const entregue = pp > 0 ? (realPcs[o.k] || 0) >= pp : concluidos.has(o.k);   // sem peças planejadas, vale o Concluído do técnico
+        if (entregue && rl > 0 && rl < p) cedo.add(o.k); });
+      /* PRODUTIVIDADE DE UM FORM = ritmo real ÷ ritmo planejado
+           (peças feitas ÷ peças planejadas) × (tempo planejado ÷ tempo gasto)
+         8 de 8 peças em 50 min, com 30 planejados → 60% (demorou mais).
+         6 de 6 peças em 30 min, com 50 planejados → 167% (foi mais rápido).
+         Antes a linha mostrava tempo gasto ÷ tempo planejado: quem demorava
+         MAIS aparecia com percentual MAIOR, em verde.
+         Sem quantidade de peças planejada, vale só o tempo: terminou ou passou do
+         planejado → planejado ÷ gasto; em andamento → gasto ÷ planejado. */
+      const prodDe = (o) => {
+        const p = planMin[o.k], rl = realMin[o.k] || 0, pp = pcsPlanDe(o);
+        if (!(p > 0) || !(rl > 0)) return 0;
+        if (pp > 0) return ((realPcs[o.k] || 0) / pp) * (p / rl);
+        // sem peças planejadas: terminou (Concluído) ou passou do tempo → planejado ÷ gasto; em andamento → gasto ÷ planejado
+        return (rl > p || concluidos.has(o.k)) ? p / rl : rl / p;
+      };
       let cumpr = 0, planTot = 0;
-      ordem.forEach(o => { const p = planMin[o.k], rl = realMin[o.k] || 0; planTot += p; cumpr += cedo.has(o.k) ? p * (p / rl) : Math.min(rl, p); });
+      ordem.forEach(o => { const p = planMin[o.k]; planTot += p; cumpr += p * prodDe(o); });
       const produtividade = pctN(cumpr, planTot);
 
       /* ── ASSERTIVIDADE (passa de 100% quando há ganho) ──
@@ -4822,11 +4844,10 @@ function __apontComparativo(R, w, ctx){
         if (pad && rl > 0) { gPadrao += pad; gRealPad += rl; }
         const itemPlano = plano.find(x => normRef(x.ref) === o.k) || {};
         const itemAg = plano.find(x => normRef(x.ref) === o.k) || {};
-        const pcsPlan = (itemAg.pcs != null && itemAg.pcs !== '') ? Number(itemAg.pcs)
-          : (window.__apontPecasPlan ? window.__apontPecasPlan(o.ref, maq, p, qtdReq, pad || p) : null);
+        const pcsPlan = pcsPlanDe(o);          // a mesma quantidade que entra na conta da produtividade
         linhas.push({ ref: '#' + o.ref, desc: (itemPlano.reprog ? '↪ reprogramado para ' + itemPlano.reprog + ' · ' : '') + (reqDe(o.ref).peca || ''),
                       plan: p, real: rl, pcs: realPcs[o.k] || 0, pcsPlan: pcsPlan, padrao: pad,
-                      tipo: 'plano', ass: ass, cedo: cedo.has(o.k), encerrado: concluidos.has(o.k), segue: seguem.has(o.k) });
+                      tipo: 'plano', ass: ass, cedo: cedo.has(o.k), prod: (rl > 0 && p > 0) ? Math.round(prodDe(o) * 100) : null, encerrado: concluidos.has(o.k), segue: seguem.has(o.k) });
       });
       const extras = {};
       prod.filter(r => planMin[chaveDe(r)] === undefined).forEach(r => {
@@ -4871,9 +4892,11 @@ function __apontComparativo(R, w, ctx){
     rot + ' ' + (val == null ? '—' : val + '%'));
 
   // barra: o quanto do tempo planejado foi apontado (passou do plano = laranja)
-  const barra = (real, plan, cedo) => {
+  const barra = (real, plan, cedo, prod) => {
     const larg = 54;                                  // estreita: Torno e Centro ficam lado a lado
     if (!plan) return h('div', { style: { width: larg } });
+    if (prod != null && !cedo) return h('div', { title: real + ' min gastos · ' + plan + ' min planejados', style: { width: larg, height: 6, borderRadius: 3, background: w.linha, overflow: 'hidden' } },
+      h('div', { style: { width: (Math.min(prod, 100)) + '%', height: '100%', background: corPct(prod) } }));
     if (cedo) return h('div', { title: 'Peças planejadas entregues em ' + real + ' de ' + plan + ' min — ' + (plan - real) + ' min a menos',
       style: { width: larg, height: 6, borderRadius: 3, background: w.verde } });
     const p = Math.min(real / plan, 1), excedeu = real > plan;
@@ -4892,7 +4915,7 @@ function __apontComparativo(R, w, ctx){
       kpi('Aderência', gAderencia == null ? '—' : gAderencia + '%', corPct(gAderencia),
           'Forms planejados feitos ÷ forms planejados do turno. Conta como feito quem foi marcado como Concluído, entregou as peças planejadas ou cumpriu o tempo planejado — o que vier primeiro. A ordem não importa.'),
       kpi('Produtividade', gProd == null ? '—' : gProd + '%', corPct(gProd),
-          'Soma de menor(tempo real, tempo planejado) de cada form ÷ tempo planejado total. Form com as peças planejadas entregues em menos tempo vale planejado ÷ gasto, então o indicador pode passar de 100%.'),
+          'Ritmo real ÷ ritmo planejado de cada form — (peças feitas ÷ planejadas) × (tempo planejado ÷ tempo gasto) — em média ponderada pelo tempo planejado. Form não iniciado conta 0%. Mais rápido que o plano passa de 100%; mais lento fica abaixo.'),
       kpi('Assertividade', gAss == null ? '—' : gAss + '%', corPct(gAss),
           'Por form: menor(real, planejado) ÷ maior(real, planejado), média ponderada pelo tempo planejado. Entregar as peças planejadas em menos tempo vale planejado ÷ gasto, então pode passar de 100%.'),
       kpi('Apontado × padrão', gPad == null ? '—' : gPad + '%', corPad(gPad),
@@ -4915,7 +4938,7 @@ function __apontComparativo(R, w, ctx){
     style: Object.assign({ color: w.suave, letterSpacing: '.5px' }, extra || {}) }, txt);
   const cabecalhoColunas = () => h('div', { className: 'grid gap-2 px-2 pb-1', style: { gridTemplateColumns: GRID } },
     rotuloCol('Requisição'), rotuloCol('Planejado'), rotuloCol('Apontado', { color: w.texto }),
-    rotuloCol('% do plano'), rotuloCol('Peças', { textAlign: 'right' }), h('span', null));
+    rotuloCol('Produtividade'), rotuloCol('Peças', { textAlign: 'right' }), h('span', null));
 
   const linhaPlano = (l, k) => {
     const ok = l.plan ? Math.round(l.real / l.plan * 100) : null;
@@ -4931,10 +4954,11 @@ function __apontComparativo(R, w, ctx){
         h('span', { style: { fontSize: 12, color: w.suave } }, l.plan + ' min'),
         l.padrao ? h('div', { style: { fontSize: 9, color: w.ciano }, title: 'Tempo padrão da Biblioteca de Desenhos' }, 'padrão ' + l.padrao) : null),
       h('span', { style: { fontSize: 13, color: w.texto, fontWeight: 800, whiteSpace: 'nowrap' } }, l.real + ' min'),
-      h('div', { className: 'flex items-center gap-2' }, barra(l.real, l.plan, l.cedo),
+      h('div', { className: 'flex items-center gap-2' }, barra(l.real, l.plan, l.cedo, l.prod),
         l.cedo ? h('span', { title: 'Entregou as ' + l.pcsPlan + ' peça(s) planejada(s) em ' + l.real + ' min, ' + (l.plan - l.real) + ' min a menos que o planejado. Produtividade = tempo planejado ÷ tempo gasto.',
                     style: { fontSize: 11, fontWeight: 800, color: w.verde, minWidth: 34 } }, Math.round(l.plan / l.real * 100) + '%')
-        : h('span', { style: { fontSize: 11, fontWeight: 700, color: ok == null ? w.suave : corPct(ok), minWidth: 34 } }, ok == null ? '—' : ok + '%')),
+        : h('span', { title: l.prod == null ? 'Sem apontamento' : (l.pcsPlan ? (l.pcs || 0) + ' de ' + l.pcsPlan + ' peça(s) em ' + l.real + ' min, com ' + l.plan + ' min planejados. Produtividade = (peças feitas ÷ planejadas) × (tempo planejado ÷ tempo gasto).' : l.real + ' min gastos, ' + l.plan + ' min planejados (sem quantidade de peças planejada).'),
+            style: { fontSize: 11, fontWeight: 700, color: l.prod == null ? w.suave : corPct(l.prod), minWidth: 34 } }, l.prod == null ? '0%' : l.prod + '%')),
       h('span', { style: { textAlign: 'right', whiteSpace: 'nowrap' },
           title: l.pcsPlan ? (l.pcs || 0) + ' peça(s) feita(s) de ' + l.pcsPlan + ' que cabiam no tempo planejado' : '' },
         h('span', { style: { fontSize: 12.5, fontWeight: 800, color: !l.pcsPlan ? w.texto : (l.pcs >= l.pcsPlan ? w.verde : l.pcs > 0 ? w.ambar : w.vermelho) } }, (l.pcs || 0)),
@@ -4979,7 +5003,7 @@ function __apontComparativo(R, w, ctx){
               ' · apontado ', h('b', { style: { color: w.texto } }, realTotal + ' min'))),
           h('div', { className: 'flex flex-wrap gap-1.5' },
             selo('Aderência', b.aderencia, corPct(b.aderencia), b.adConcl + ' de ' + b.planQtd + ' forms planejados feitos' + (b.refExtra ? ' · também pegou o #' + b.refExtra + ', fora do plano' : '')),
-            selo('Produtividade', b.produtividade, corPct(b.produtividade), 'Tempo cumprido ÷ tempo planejado'),
+            selo('Produtividade', b.produtividade, corPct(b.produtividade), 'Ritmo real ÷ ritmo planejado dos forms do turno'),
             selo('Assertividade', b.assertividade, corPct(b.assertividade), 'O quanto o tempo real ficou perto do planejado'))),
         planejadas.length ? h('div', null, tituloGrupo('Planejado para o turno', w.suave, planejadas.length + ' form(s)'),
           cabecalhoColunas(),
@@ -23135,6 +23159,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 07/10/2026 08:04</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 07/10/2026 09:47</div>
 </body>
 </html>
