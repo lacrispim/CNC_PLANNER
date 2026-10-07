@@ -4852,7 +4852,7 @@ function __apontComparativo(R, w, ctx){
 
   // barra: o quanto do tempo planejado foi apontado (passou do plano = laranja)
   const barra = (real, plan, cedo) => {
-    const larg = 120;
+    const larg = 54;                                  // estreita: Torno e Centro ficam lado a lado
     if (!plan) return h('div', { style: { width: larg } });
     if (cedo) return h('div', { title: 'Peças planejadas entregues em ' + real + ' de ' + plan + ' min — ' + (plan - real) + ' min a menos',
       style: { width: larg, height: 6, borderRadius: 3, background: w.verde } });
@@ -4883,7 +4883,7 @@ function __apontComparativo(R, w, ctx){
       h('p', { className: 'py-6 text-center text-[12px]', style: { color: w.suave } }, 'Nada planejado nem apontado neste dia.'));
   }
 
-  const GRID = 'minmax(0,1fr) 92px 96px 128px 52px 22px';
+  const GRID = 'minmax(0,1fr) 62px 62px 98px 50px 14px';
 
   const tituloGrupo = (txt, cor, n) => h('div', { className: 'mb-1 mt-2 flex items-center gap-2' },
     h('span', { className: 'text-[9.5px] font-black uppercase', style: { color: cor, letterSpacing: '.6px' } }, txt),
@@ -4893,16 +4893,16 @@ function __apontComparativo(R, w, ctx){
   // cabeçalho das colunas: diz qual número é o do plano e qual é o apontado
   const rotuloCol = (txt, extra) => h('span', { className: 'text-[9px] font-bold uppercase',
     style: Object.assign({ color: w.suave, letterSpacing: '.5px' }, extra || {}) }, txt);
-  const cabecalhoColunas = () => h('div', { className: 'grid gap-3 px-3 pb-1', style: { gridTemplateColumns: GRID } },
+  const cabecalhoColunas = () => h('div', { className: 'grid gap-2 px-2 pb-1', style: { gridTemplateColumns: GRID } },
     rotuloCol('Requisição'), rotuloCol('Planejado'), rotuloCol('Apontado', { color: w.texto }),
-    rotuloCol('% do plano'), rotuloCol('Peças feitas/plano', { textAlign: 'right' }), h('span', null));
+    rotuloCol('% do plano'), rotuloCol('Peças', { textAlign: 'right' }), h('span', null));
 
   const linhaPlano = (l, k) => {
     const ok = l.plan ? Math.round(l.real / l.plan * 100) : null;
     const icone = l.segue ? { t: '↪', c: w.ciano, d: 'Cumprido no turno — segue no próximo' }
                 : l.encerrado ? { t: '✓', c: w.verde, d: 'Concluído pelo técnico' }
                 : { t: '○', c: w.suave, d: 'Ainda em produção' };
-    return h('div', { key: k, className: 'grid items-center gap-3 rounded-md px-3 py-2',
+    return h('div', { key: k, className: 'grid items-center gap-2 rounded-md px-2 py-2',
         style: { gridTemplateColumns: GRID, background: w.carta, borderLeft: '3px solid ' + (l.encerrado || l.segue ? w.verde : w.linha) } },
       h('div', { style: { minWidth: 0 } },
         h('span', { style: { fontFamily: 'monospace', fontWeight: 700, color: w.texto, fontSize: 12 } }, l.ref),
@@ -4923,7 +4923,7 @@ function __apontComparativo(R, w, ctx){
       h('span', { title: icone.d, style: { fontSize: 12, fontWeight: 700, color: icone.c, textAlign: 'center' } }, icone.t));
   };
 
-  const linhaExtra = (l, k) => h('div', { key: k, className: 'grid items-center gap-3 rounded-md px-3 py-2',
+  const linhaExtra = (l, k) => h('div', { key: k, className: 'grid items-center gap-2 rounded-md px-2 py-2',
       style: { gridTemplateColumns: GRID, background: '#2a1d12', borderLeft: '3px solid ' + w.laranja } },
     h('div', { style: { minWidth: 0 } },
       h('span', { style: { fontFamily: 'monospace', fontWeight: 700, color: w.laranja, fontSize: 12 } }, l.ref),
@@ -4934,7 +4934,7 @@ function __apontComparativo(R, w, ctx){
     h('span', { style: { fontSize: 11.5, fontWeight: 700, color: w.texto, textAlign: 'right' } }, (l.pcs || 0) + ' pç'),
     h('span', null));
 
-  const linhaPerda = (l, k) => h('div', { key: k, className: 'grid items-center gap-3 rounded-md px-3 py-2',
+  const linhaPerda = (l, k) => h('div', { key: k, className: 'grid items-center gap-2 rounded-md px-2 py-2',
       style: { gridTemplateColumns: GRID, background: '#2a1418', borderLeft: '3px solid ' + w.vermelho } },
     h('div', { style: { minWidth: 0 } },
       h('span', { style: { fontWeight: 800, color: w.vermelho, fontSize: 11.5 } }, 'Perdas'),
@@ -4943,16 +4943,17 @@ function __apontComparativo(R, w, ctx){
     h('span', { style: { fontSize: 13, color: w.vermelho, fontWeight: 800, whiteSpace: 'nowrap' } }, l.real + ' min'),
     barra(l.real, l.plan), h('span', null), h('span', null));
 
-  return h('div', { className: 'rounded-xl p-4', style: { background: w.painel, border: '1px solid ' + w.linha } }, cab,
-    blocos.map((b, i) => {
+  /* Torno de um lado, Centro do outro — cada coluna com todos os turnos da
+     máquina, em ordem. Em tela estreita as colunas descem uma embaixo da outra. */
+  const bloco = (b, i) => {
       const planejadas = b.linhas.filter(l => l.tipo === 'plano');
       const extras = b.linhas.filter(l => l.tipo === 'extra');
       const perdas = b.linhas.filter(l => l.tipo === 'perda');
       const realTotal = planejadas.reduce((s, l) => s + l.real, 0);
       return h('div', { key: i, className: 'mb-3 rounded-lg p-3', style: { background: w.fundo, border: '1px solid ' + w.linha } },
         h('div', { className: 'mb-2 flex flex-wrap items-center justify-between gap-2' },
-          h('div', { className: 'flex items-baseline gap-3' },
-            h('p', { className: 'text-[13px] font-black', style: { color: b.maq === 'TORNO' ? w.ciano : w.roxo } }, b.t + 'º turno · ' + (b.maq === 'TORNO' ? 'Torno' : 'Centro')),
+          h('div', { className: 'flex flex-wrap items-baseline gap-x-3' },
+            h('p', { className: 'text-[13px] font-black', style: { color: w.texto } }, b.t === 'ADM' ? 'Administrativo' : b.t + 'º turno'),
             h('p', { className: 'text-[11px]', style: { color: w.suave } },
               'planejado ', h('b', { style: { color: w.texto } }, b.planTot + ' min'),
               ' · apontado ', h('b', { style: { color: w.texto } }, realTotal + ' min'))),
@@ -4967,7 +4968,24 @@ function __apontComparativo(R, w, ctx){
           h('div', { className: 'space-y-1' }, extras.map(linhaExtra))) : null,
         perdas.length ? h('div', null, tituloGrupo('Perdas', w.vermelho, ''),
           h('div', { className: 'space-y-1' }, perdas.map(linhaPerda))) : null);
-    }));
+  };
+  const coluna = (maq, nome, cor) => {
+    const meus = blocos.filter(x => x.maq === maq);
+    const plan = meus.reduce((a, x) => a + x.planTot, 0);
+    const real = meus.reduce((a, x) => a + x.linhas.filter(l => l.tipo === 'plano').reduce((s2, l) => s2 + l.real, 0), 0);
+    return h('div', { key: maq, style: { flex: '1 1 400px', minWidth: 0 } },
+      h('div', { className: 'mb-2 flex items-baseline justify-between gap-2', style: { borderBottom: '2px solid ' + cor, paddingBottom: 5 } },
+        h('p', { className: 'text-[14px] font-black', style: { color: cor } }, nome),
+        h('p', { className: 'text-[11px]', style: { color: w.suave } }, meus.length
+          ? ['planejado ', h('b', { key: 'p', style: { color: w.texto } }, plan + ' min'), ' · apontado ', h('b', { key: 'r', style: { color: w.texto } }, real + ' min')]
+          : '')),
+      meus.length ? meus.map(bloco)
+        : h('p', { className: 'rounded-lg py-6 text-center text-[11.5px]', style: { border: '1px dashed ' + w.linha, color: w.suave } }, 'Nada planejado nem apontado no ' + nome.toLowerCase() + '.'));
+  };
+
+  return h('div', { className: 'rounded-xl p-4', style: { background: w.painel, border: '1px solid ' + w.linha } }, cab,
+    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start' } },
+      coluna('TORNO', 'Torno', w.ciano), coluna('CENTRO', 'Centro', w.roxo)));
 }
 window.__apontComparativo = __apontComparativo;
 
@@ -23097,6 +23115,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 06/10/2026 15:04</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 07/10/2026 07:57</div>
 </body>
 </html>
