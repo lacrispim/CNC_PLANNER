@@ -3425,7 +3425,7 @@ function __apontBarrasMeta(R, w, linhas, zr, ordem, umDiaSo, Legenda){
           h('span', { style: { fontSize: 12.5, fontWeight: 800, color: p && p.horas ? w.texto : w.suave } }, p && p.horas ? fmt(p.horas) : '—')),
         pct != null ? h('div', { className: 'flex items-baseline justify-between', style: { marginTop: 3 } },
           h('span', { style: { fontSize: 10.5, color: w.suave } }, 'Aderência ao plano'),
-          h('span', { style: { fontSize: 12.5, fontWeight: 800, color: pct <= 50 ? w.vermelho : pct <= 85 ? w.ambar : w.verde } }, pct + '%'))
+          h('span', { style: { fontSize: 12.5, fontWeight: 800, color: pct <= 55 ? w.vermelho : pct <= 89 ? w.ambar : w.verde } }, pct + '%'))
         : h('p', { style: { fontSize: 10, color: w.suave, marginTop: 3 } }, 'Sem programação para o turno dele no período.')));
   };
 
@@ -4844,8 +4844,8 @@ function __apontComparativo(R, w, ctx){
   const maqDe = r => { const m = String(r.maquina || '').toUpperCase(); return m.includes('CENTRO') ? 'CENTRO' : m.includes('TORNO') ? 'TORNO' : (catDe(r.operador) === 'CENTRO' ? 'CENTRO' : 'TORNO'); };
   const nOps = (maq, t) => ops.filter(o => o.cat === maq && String(o.turno) === String(t)).length;
   const pctN = (a, b) => b > 0 ? Math.round(a / b * 100) : null;
-  /* Faixas do indicador: até 50% vermelho · 51 a 85% amarelo · 86% para cima verde. */
-  const corPct = p => p == null ? w.suave : p <= 50 ? w.vermelho : p <= 85 ? w.ambar : w.verde;
+  /* Faixas do indicador: até 55% vermelho · 56 a 89% amarelo · 90% para cima verde. */
+  const corPct = p => p == null ? w.suave : p <= 55 ? w.vermelho : p <= 89 ? w.ambar : w.verde;
   const reqDe = ref => reqs.find(q => String(q.ref) === String(ref)) || {};
   /* Conta para a aderência quando o técnico fez o que estava planejado para o
      turno dele: "Encerrado" (a peça acabou) ou "Cumprido — segue no próximo
@@ -5087,7 +5087,7 @@ function __apontComparativo(R, w, ctx){
       style: { width: larg, height: 6, borderRadius: 3, background: w.verde } });
     const p = Math.min(real / plan, 1), excedeu = real > plan;
     return h('div', { title: real + ' de ' + plan + ' min planejados', style: { width: larg, height: 6, borderRadius: 3, background: w.linha, overflow: 'hidden' } },
-      h('div', { style: { width: (p * 100) + '%', height: '100%', background: excedeu ? w.laranja : p <= .5 ? w.vermelho : p <= .85 ? w.ambar : w.verde } }));
+      h('div', { style: { width: (p * 100) + '%', height: '100%', background: excedeu ? w.laranja : p <= .55 ? w.vermelho : p < .9 ? w.ambar : w.verde } }));
   };
 
   const cab = h('div', { className: 'mb-4 flex flex-wrap items-center justify-between gap-3' },
@@ -23357,6 +23357,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 08/10/2026 11:02</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 08/10/2026 12:35</div>
 </body>
 </html>
