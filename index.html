@@ -4271,10 +4271,15 @@ function __apontPadrao(ref, maq, qtd){
     const q = Math.max(parseInt(qtd, 10) || qCad, 1);
     const cT = Number(d.cicloTorno)  || (d.tTorno  ? (d.tTorno  / qCad) : 0);
     const cC = Number(d.cicloCentro) || (d.tCentro ? (d.tCentro / qCad) : 0);
-    const t = Math.round(cT * q + (d.setupTorno || 0)  + (d.progTorno || 0));
-    const c = Math.round(cC * q + (d.setupCentro || 0) + (d.progCentro || 0));
+    /* O tempo de MÁQUINA é ciclo × lote + setup. A programação (CAM) é feita
+       por outro técnico, fora da máquina, e tem a própria raia no planejamento
+       — somá-la aqui cobraria do operador um tempo que não é dele. */
+    const t = Math.round(cT * q + (d.setupTorno || 0));
+    const c = Math.round(cC * q + (d.setupCentro || 0));
+    const pg = Math.round((d.progTorno || 0) + (d.progCentro || 0));
     if (maq === 'TORNO')  return t > 0 ? t : null;
     if (maq === 'CENTRO') return c > 0 ? c : null;
+    if (maq === 'PROG')   return pg > 0 ? pg : null;
     return (t + c) > 0 ? t + c : null;
   } catch (e) { return null; }
 }
@@ -4872,8 +4877,20 @@ function __apontComparativo(R, w, ctx){
       const meus = regs.filter(r => turnoDe(r.operador) === String(t) && maqDe(r) === maq);
       if (!plano.length && !meus.length) return;
 
-      const prod = meus.filter(r => r.tipo_registro !== 'perda');
-      const perdas = meus.filter(r => r.tipo_registro === 'perda');
+      /* SETUP é parte do processo da peça, não perda. Quando o técnico apontou
+         o setup COM o número do form, esse tempo entra no tempo daquela peça.
+         Setup sem número de form continua como perda do turno — não há como
+         saber a que peça ele pertence. */
+      const ehSetup = r => String(r.motivo || '').toUpperCase().indexOf('SETUP') >= 0
+                        || String(r.tipo || '').toUpperCase().indexOf('SETUP') >= 0;
+      const setupDeForm = r => r.tipo_registro === 'perda' && ehSetup(r) && String(r.forms || '').trim() !== '';
+      /* PROGRAMAÇÃO (CAM) não é tempo de máquina: quem programa é outro
+         técnico, fora do turno da máquina. Fica listada à parte, sem entrar
+         no tempo da peça nem nos indicadores do operador. */
+      const ehProg = r => r.tipo_registro !== 'perda' && String(r.tipo || '').toUpperCase().indexOf('PROGRAMA') >= 0;
+      const prod = meus.filter(r => (r.tipo_registro !== 'perda' || setupDeForm(r)) && !ehProg(r));
+      const perdas = meus.filter(r => r.tipo_registro === 'perda' && !setupDeForm(r));
+      const programacao = meus.filter(ehProg);
 
       // ── planejado por form ──
       const planMin = {}, ordem = [];
@@ -4899,10 +4916,11 @@ function __apontComparativo(R, w, ctx){
       /* O técnico aponta peças a cada OPERAÇÃO. realBruto guarda o que ele
          digitou; realPcs guarda peças completas (bruto ÷ operações), que é a
          unidade do plano. Com 1 operação os dois são iguais. */
-      const realMin = {}, realPcs = {}, realBruto = {}, opsDe = {};
+      const realMin = {}, realPcs = {}, realBruto = {}, opsDe = {}, setupMin = {};
       prod.forEach(r => {
         const k = chaveDe(r);
         realMin[k] = (realMin[k] || 0) + (Number(r.minutos) || 0);
+        if (ehSetup(r)) setupMin[k] = (setupMin[k] || 0) + (Number(r.minutos) || 0);
         realBruto[k] = (realBruto[k] || 0) + (Number(r.pecas) || 0);
         if (opsDe[k] === undefined) opsDe[k] = window.__apontOpsDe ? window.__apontOpsDe(r.forms) : 1;
       });
@@ -5030,7 +5048,7 @@ function __apontComparativo(R, w, ctx){
         const pcsPlan = pcsPlanDe(o);          // a mesma quantidade que entra na conta da produtividade
         linhas.push({ ref: '#' + o.ref, desc: (itemPlano.reprog ? '↪ reprogramado para ' + itemPlano.reprog + ' · ' : '') + (reqDe(o.ref).peca || ''),
                       plan: p, real: rl, pcs: realPcs[o.k] || 0, pcsPlan: pcsPlan, padrao: pad,
-                      pcsBruto: realBruto[o.k] || 0, ops: opsDe[o.k] || 1,
+                      pcsBruto: realBruto[o.k] || 0, ops: opsDe[o.k] || 1, setup: setupMin[o.k] || 0,
                       tipo: 'plano', ass: ass, cedo: cedo.has(o.k), prod: (rl > 0 && p > 0) ? Math.round(prodDe(o) * 100) : null, encerrado: concluidos.has(o.k), segue: seguem.has(o.k) });
       });
       const extras = {};
@@ -5042,6 +5060,15 @@ function __apontComparativo(R, w, ctx){
       Object.keys(extras).forEach(k => linhas.push({ ref: '#' + k, desc: '', plan: 0, real: extras[k].real,
         pcs: (window.__apontOpsPecas ? window.__apontOpsPecas(extras[k].pcs, extras[k].ops) : extras[k].pcs),
         pcsBruto: extras[k].pcs, ops: extras[k].ops, tipo: 'extra' }));
+
+      if (programacao.length) {
+        const porForm = {};
+        programacao.forEach(r => { const kk = normRef(r.forms) || '(sem nº)';
+          porForm[kk] = (porForm[kk] || 0) + (Number(r.minutos) || 0); });
+        linhas.push({ ref: 'PROGRAMAÇÃO', tipo: 'prog', plan: 0,
+          real: programacao.reduce((x, r) => x + (Number(r.minutos) || 0), 0),
+          desc: Object.keys(porForm).map(kk => '#' + kk + ' (' + porForm[kk] + 'M)').join(' | ') });
+      }
 
       const perdaPlan = plano.filter(x => String(x.ref).startsWith('PERDA|'));
       const pPlan = perdaPlan.reduce((s, x) => s + (Number(x.min) || 0), 0);
@@ -5149,7 +5176,10 @@ function __apontComparativo(R, w, ctx){
       h('div', { style: { whiteSpace: 'nowrap' } },
         h('span', { style: { fontSize: 12, color: w.suave } }, l.plan + ' min'),
         l.padrao ? h('div', { style: { fontSize: 9, color: w.ciano }, title: 'Tempo padrão da Biblioteca de Desenhos' }, 'padrão ' + l.padrao) : null),
-      h('span', { style: { fontSize: 13, color: w.texto, fontWeight: 800, whiteSpace: 'nowrap' } }, l.real + ' min'),
+      h('div', { style: { whiteSpace: 'nowrap' } },
+        h('span', { style: { fontSize: 13, color: w.texto, fontWeight: 800 } }, l.real + ' min'),
+        l.setup > 0 ? h('div', { style: { fontSize: 9, color: w.ciano }, title: 'O setup faz parte do processo da peça, então entra no tempo dela.' },
+          'inclui ' + l.setup + ' de setup') : null),
       h('div', { className: 'flex items-center gap-2' }, barra(l.real, l.plan, l.cedo, l.prod),
         l.cedo ? h('span', { title: 'Entregou as ' + l.pcsPlan + ' peça(s) planejada(s) em ' + l.real + ' min, ' + (l.plan - l.real) + ' min a menos que o planejado. Produtividade = tempo planejado ÷ tempo gasto.',
                     style: { fontSize: 11, fontWeight: 800, color: w.verde, minWidth: 34 } }, Math.round(l.plan / l.real * 100) + '%')
@@ -5185,12 +5215,24 @@ function __apontComparativo(R, w, ctx){
     h('span', { style: { fontSize: 13, color: w.vermelho, fontWeight: 800, whiteSpace: 'nowrap' } }, l.real + ' min'),
     barra(l.real, l.plan), h('span', null), h('span', null));
 
+  /* Programação (CAM): aparece para o planejador saber que houve, mas o tempo
+     é de quem programou, não do operador da máquina. */
+  const linhaProg = (l, k) => h('div', { key: k, className: 'grid items-center gap-2 rounded-md px-2 py-2',
+      style: { gridTemplateColumns: GRID, background: '#0f2429', borderLeft: '3px solid ' + w.ciano } },
+    h('div', { style: { minWidth: 0 } },
+      h('span', { style: { fontFamily: 'monospace', fontWeight: 700, color: w.ciano, fontSize: 12 } }, l.ref),
+      h('div', { style: { fontSize: 10.5, color: w.ciano, opacity: .8 } }, l.desc)),
+    h('span', { style: { fontSize: 11, color: w.ciano, opacity: .6, whiteSpace: 'nowrap' } }, 'fora da máquina'),
+    h('span', { style: { fontSize: 13, color: w.ciano, fontWeight: 800, whiteSpace: 'nowrap' } }, l.real + ' min'),
+    h('span', null), h('span', null), h('span', null));
+
   /* Torno de um lado, Centro do outro — cada coluna com todos os turnos da
      máquina, em ordem. Em tela estreita as colunas descem uma embaixo da outra. */
   const bloco = (b, i) => {
       const planejadas = b.linhas.filter(l => l.tipo === 'plano');
       const extras = b.linhas.filter(l => l.tipo === 'extra');
       const perdas = b.linhas.filter(l => l.tipo === 'perda');
+      const progs = b.linhas.filter(l => l.tipo === 'prog');
       const realTotal = planejadas.reduce((s, l) => s + l.real, 0);
       return h('div', { key: i, className: 'mb-3 rounded-lg p-3', style: { background: w.fundo, border: '1px solid ' + w.linha } },
         h('div', { className: 'mb-2 flex flex-wrap items-center justify-between gap-2' },
@@ -5208,6 +5250,8 @@ function __apontComparativo(R, w, ctx){
           h('div', { className: 'space-y-1' }, planejadas.map(linhaPlano))) : null,
         extras.length ? h('div', null, tituloGrupo('Feito fora do plano', w.laranja, extras.length + ' form(s)'),
           h('div', { className: 'space-y-1' }, extras.map(linhaExtra))) : null,
+        progs.length ? h('div', null, tituloGrupo('Programação (CAM)', w.ciano, 'não entra no tempo da peça'),
+          h('div', { className: 'space-y-1' }, progs.map(linhaProg))) : null,
         perdas.length ? h('div', null, tituloGrupo('Perdas', w.vermelho, ''),
           h('div', { className: 'space-y-1' }, perdas.map(linhaPerda))) : null);
   };
@@ -23357,6 +23401,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 08/10/2026 12:35</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 08/10/2026 12:54</div>
 </body>
 </html>
