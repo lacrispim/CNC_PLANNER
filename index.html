@@ -2182,6 +2182,10 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
 #solicitacoesView .sol-main{padding:20px 24px;max-width:1500px;margin:0 auto;width:100%;box-sizing:border-box}
 #solicitacoesView .sol-filters{flex-wrap:wrap;overflow:visible;padding-bottom:0;margin-bottom:14px}
 #solicitacoesView .sol-filters input#fsearch{flex:1;min-width:240px}
+#solicitacoesView .sol-filters #fclr{padding:9px 13px;border-radius:9px;border:1px solid #b91c1c55;background:var(--surface);
+  color:#b91c1c;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}
+#solicitacoesView .sol-filters #fclr:hover{background:#b91c1c12}
+#solicitacoesView .sol-filters #fclrN{opacity:.7;font-weight:600}
 #solicitacoesView .sol-filters input, #solicitacoesView .sol-filters select{height:38px;border-radius:7px}
 #solicitacoesView .sol-tbl-wrap{overflow-x:auto;overflow-y:visible;max-height:none;min-height:0;border-radius:11px;padding:6px 14px 10px}
 #solicitacoesView table{width:100%;min-width:900px}
@@ -5043,15 +5047,32 @@ const SEMANA = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 's�
 
 /* O SheetJS entra sob demanda, como no resto do app — não vale carregar
    400 KB em toda abertura por causa de um botão que às vezes é usado. */
+/* O leitor/gravador de Excel vem de fora. Em rede de fábrica um CDN às vezes
+   está bloqueado e aí TODA exportação falha, então aqui são tentados três em
+   sequência antes de desistir. */
+const __XLSX_CDNS = [
+  'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
+  'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
+  'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js'
+];
+let __xlsxProm = null;
 function __apontGaranteXLSX(){
   if (window.XLSX) return Promise.resolve(true);
-  return new Promise(res => {
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-    s.onload = () => res(!!window.XLSX);
-    s.onerror = () => res(false);
-    document.head.appendChild(s);
+  if (__xlsxProm) return __xlsxProm;          // duas exportações seguidas não baixam duas vezes
+  __xlsxProm = new Promise(res => {
+    let i = 0;
+    const tenta = () => {
+      if (window.XLSX) return res(true);
+      if (i >= __XLSX_CDNS.length) { __xlsxProm = null; return res(false); }
+      const el = document.createElement('script');
+      el.src = __XLSX_CDNS[i++];
+      el.onload = () => res(!!window.XLSX) ;
+      el.onerror = () => { el.remove(); tenta(); };
+      document.head.appendChild(el);
+    };
+    tenta();
   });
+  return __xlsxProm;
 }
 
 async function __apontExportaProg(ctx, periodo){
@@ -6441,6 +6462,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="sol-btn-list" id="btnList" onclick="Sol && Sol.openList()" data-i18n-title="sol.materiaisCompraTitle" title="Lista de materiais a comprar — solicitações com status Aprovação para compra">🛒 <span data-i18n="sol.materiaisCompra">Materiais para Compra</span> <span id="btnListCount" class="sol-btn-list-count">0</span></button>
       <button class="sol-btn-bulk" onclick="Sol && Sol.ratearExistentes()" title="Divide o custo do fornecedor entre a principal e as relacionadas nos grupos criados antes do rateio automático">÷ Ratear relacionadas</button>
       <button class="sol-btn-bulk" onclick="Sol && Sol.openBulkAttach()">↑ <span data-i18n="sol.atrelarDes">Atrelar desenhos</span></button>
+      <label class="sol-btn-bulk" id="btnImpCompras" style="cursor:pointer;color:#92400e;border-color:#92400e55" title="Subir a planilha de compras (BASE GERAL DE COMPRAS) — grava material, fornecedor e custo unitário de cada forms">📦 Importar compras<input type="file" accept=".xlsx,.xls" hidden onchange="importarPlanilhaCompras(this.files[0]);this.value=''"></label>
       <button class="sol-btn-bulk" onclick="exportSolExcel()" title="Exportar as solicitações (com todos os campos do detalhe) para uma planilha Excel">⬇ Exportar Excel</button>
       <button class="sol-btn-new" onclick="Sol && Sol.openNew()">+ <span data-i18n="sol.novaSolicit">Nova solicitação</span></button>
     </div>
@@ -6450,15 +6472,17 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 <div class="sol-main">
   <div class="sol-stats" id="stats"></div>
   <div class="sol-filters">
-    <input id="fsearch" type="search" name="cncq_busca" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-i18n-placeholder="sol.buscarPlaceholder" placeholder="Buscar por peça, desenho, solicitante, Forms Ref..." oninput="Sol.go()" onsearch="Sol.go()">
-    <input id="fsap" type="search" name="cncq_sap" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" placeholder="🔍 SAP" oninput="Sol.go()" onsearch="Sol.go()" style="min-width:120px;max-width:160px" title="Buscar por código SAP da peça">
+    <input id="fsearch" type="search" name="cncq_busca" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-i18n-placeholder="sol.buscarPlaceholder" placeholder="Buscar por peça, desenho, planta, material, SAP, solicitante..." oninput="Sol.goDeb()" onsearch="Sol.go()">
+    <input id="fsap" type="search" name="cncq_sap" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" placeholder="🔍 SAP" oninput="Sol.goDeb()" onsearch="Sol.go()" style="min-width:120px;max-width:160px" title="Buscar por código SAP da peça ou SAP IRON">
     <select id="fpl" onchange="Sol.go()"><option value="" data-i18n="sol.todasPlantas">Todas as plantas</option></select>
     <select id="far" onchange="Sol.go()"><option value="" data-i18n="sol.todasAreas">Todas as áreas</option></select>
     <select id="fpr" onchange="Sol.go()"><option value="" data-i18n="sol.todasPrior">Todas as prioridades</option></select>
     <select id="fst" onchange="Sol.go()"><option value="" data-i18n="sol.todosStatus">Todos os status</option><option data-i18n="status.pendente">Pendente</option><option data-i18n="status.aprovacao">Aprovação para compra</option><option data-i18n="status.aguardandoSap">Aguardando SAP IRON</option><option data-i18n="status.filaProducao">Fila de produção</option><option data-i18n="status.emProducao">Em Produção</option><option data-i18n="status.encerrado">Encerrado</option><option data-i18n="status.rejeitado">Rejeitado</option></select>
+    <select id="fdc" onchange="Sol.trocaCampoData()" data-i18n-title="filter.campoData" title="Sobre qual data os filtros de ano, mês e dia valem"><option value="dt" data-i18n="filter.dataSol">Data sol.</option><option value="dtp" data-i18n="filter.dataProd">Data prod.</option></select>
     <select id="fyr" onchange="Sol.go()" data-i18n-title="filter.ano" title="Ano"><option value="" data-i18n="filter.ano">Ano</option></select>
     <select id="fmo" onchange="Sol.go()" data-i18n-title="filter.mes" title="Mês"><option value="" data-i18n="filter.mes">Mês</option><option value="01" data-i18n="mon.jan">Jan</option><option value="02" data-i18n="mon.fev">Fev</option><option value="03" data-i18n="mon.mar">Mar</option><option value="04" data-i18n="mon.abr">Abr</option><option value="05" data-i18n="mon.mai">Mai</option><option value="06" data-i18n="mon.jun">Jun</option><option value="07" data-i18n="mon.jul">Jul</option><option value="08" data-i18n="mon.ago">Ago</option><option value="09" data-i18n="mon.set">Set</option><option value="10" data-i18n="mon.out">Out</option><option value="11" data-i18n="mon.nov">Nov</option><option value="12" data-i18n="mon.dez">Dez</option></select>
     <select id="fdy" onchange="Sol.go()" data-i18n-title="filter.dia" title="Dia"><option value="" data-i18n="filter.dia">Dia</option></select>
+    <button id="fclr" onclick="Sol.limpaFiltros()" title="Limpar todos os filtros" style="display:none">✕ <span data-i18n="filter.limpar">Limpar</span> <span id="fclrN"></span></button>
   </div>
   <script>
     /* Edge/Chrome às vezes preenchem sozinhos os campos de busca com um e-mail
@@ -6673,6 +6697,10 @@ const I18N = {
     'filter.ano': 'Ano',
     'filter.mes': 'Mês',
     'filter.dia': 'Dia',
+    'filter.campoData': 'Sobre qual data valem os filtros de ano, mês e dia',
+    'filter.dataSol': 'Data sol.',
+    'filter.dataProd': 'Data prod.',
+    'filter.limpar': 'Limpar',
     // Meses (siglas curtas)
     'mon.jan': 'Jan',
     'mon.fev': 'Fev',
@@ -6979,6 +7007,10 @@ const I18N = {
     'filter.ano': 'Year',
     'filter.mes': 'Month',
     'filter.dia': 'Day',
+    'filter.campoData': 'Which date the year, month and day filters apply to',
+    'filter.dataSol': 'Request date',
+    'filter.dataProd': 'Prod. date',
+    'filter.limpar': 'Clear',
     'mon.jan': 'Jan',
     'mon.fev': 'Feb',
     'mon.mar': 'Mar',
@@ -16171,6 +16203,7 @@ function _unmarkDeleted(id){
 // Sync Firebase: salva debounced (2s). Usa fbGetBaseUrl() + fbReady do CNC.
 let _solFbSaveTimer = null;
 function _persistRec(r){
+  if (r) { r.__hayG = 0; }           // o texto mudou → a busca reindexa este registro
   const m = _loadMods();
   m[r.id] = {
     status: r.status, files: r.files, obs: r.obs, _promoted: r._promoted,
@@ -17023,8 +17056,12 @@ async function _solFbLoad(){
   } catch(e) { console.warn('[sol-fb] load erro:', e); }
 }
 
-// Poll leve: re-checa Firebase a cada 30s (pra ver mudanças de outra pessoa)
-setInterval(() => { _solFbLoad(); }, 30000);
+/* Poll leve: re-checa o Firebase a cada 30 s pra ver mudanças de outra
+   pessoa. Com a aba escondida (outra guia, computador bloqueado) não há
+   ninguém olhando, então o poll pausa — e, quando a aba volta, recarrega na
+   hora, o que é mais rápido do que esperar o próximo ciclo. */
+setInterval(() => { if (!document.hidden) _solFbLoad(); }, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) _solFbLoad(); });
 
 // Migração v4: remapeia statuses legados
 (function migrateStatusV4(){
@@ -17485,6 +17522,7 @@ function fileChips(files) {
 }
 
 function initFilters() {
+  __solInvalida();
   const plants = [...new Set(data.map(r=>r.pl).filter(Boolean))].sort();
   const areas = [...new Set(data.map(r=>r.ar).filter(Boolean))].sort();
   const prios = [...new Set(data.map(r=>r.pr).filter(Boolean))].sort();
@@ -17496,7 +17534,8 @@ function initFilters() {
   // ─── Filtros de data ───
   const fyr=document.getElementById('fyr'), fdy=document.getElementById('fdy');
   if (fyr) {
-    const years = [...new Set(data.map(r=>r.dtp && r.dtp.slice(0,4)).filter(Boolean))].sort();
+    const campoDt = ((document.getElementById('fdc') || {}).value) || 'dt';
+    const years = [...new Set(data.map(r => r[campoDt] && String(r[campoDt]).slice(0,4)).filter(Boolean))].sort();
     const cy = fyr.value;
     fyr.innerHTML=`<option value="">${t('filter.ano')}</option>`+years.map(y=>`<option${y===cy?' selected':''}>${y}</option>`).join('');
   }
@@ -17531,9 +17570,54 @@ function renderStats() {
   document.getElementById('toplbl').textContent = `${tot} ${t('sol.solicitacoes')} · ${[...new Set(data.map(r=>r.pl).filter(Boolean))].length} ${t('sol.plantas')}`;
 }
 
+/* ── Busca: tudo comparado sem acento e em minúsculas ───────────────────
+   "peca" acha "peça", "valvula" acha "válvula". O texto de cada solicitação
+   vira um blob só, guardado no próprio registro e refeito quando a base muda
+   (__solGer é a geração atual da base).                                   */
+let __solGer = 1;
+const __solNormCache = new Map();
+function __solNorm(v) {
+  if (v == null) return '';
+  const t = String(v);
+  if (t.length > 40) return t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  let c = __solNormCache.get(t);
+  if (c === undefined) {
+    c = t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    if (__solNormCache.size < 8000) __solNormCache.set(t, c);
+  }
+  return c;
+}
+window.__solNorm = __solNorm;
+function __solInvalida() { __solGer++; }
+window.__solInvalida = __solInvalida;
+
+/* Tudo o que a busca enxerga de uma solicitação. */
+function __solHay(r) {
+  if (r.__hayG === __solGer) return r.__hay;
+  const mats = [];
+  try { (r.materiaisExtras || []).forEach(m => mats.push(m && (m.desc || m.material || m.nome), m && m.sap)); } catch (e) {}
+  r.__hay = __solNorm([r.id, r.formsRef, r.p, r.cd, r.sl, r.em, r.os, r.pl, r.ar, r.pr, r.status,
+                       r.sp, r.sapIron, r.mpIron, r.materialCompra, r.pedidoIron, r.pedCompra,
+                       r.nf, r.obs, r.prevForn, r.dcm].concat(mats).filter(Boolean).join(' '));
+  r.__hayG = __solGer;
+  return r.__hay;
+}
+
+/* "mancal haste" acha "Mancal da haste"; "bucha bico" idem.
+   Entre aspas a frase é procurada inteira.                                */
+function __solTermos(q) {
+  const out = [];
+  const re = /"([^"]+)"|(\S+)/g;
+  let m;
+  while ((m = re.exec(q))) { const t = (m[1] || m[2]).trim(); if (t) out.push(t); }
+  return out;
+}
+
 function go() {
-  const q = document.getElementById('fsearch').value.toLowerCase().trim();
-  const qSap = (document.getElementById('fsap')||{}).value ? document.getElementById('fsap').value.trim() : '';
+  const q = __solNorm(document.getElementById('fsearch').value.trim());
+  const qSap = __solNorm(((document.getElementById('fsap') || {}).value || '').trim());
+  const campoDt = ((document.getElementById('fdc') || {}).value) || 'dt';
+  const termos = __solTermos(q);
   const pl = document.getElementById('fpl').value;
   const ar = document.getElementById('far').value;
   const pr = document.getElementById('fpr').value;
@@ -17545,13 +17629,13 @@ function go() {
   // Só roda quando há termo de busca; calcula um ranking inteligente.
   function _matchScore(r, q) {
     if (!q) return 0;
-    const id = String(r.id || '').toLowerCase();
-    const fref = String(r.formsRef || '').toLowerCase();
-    const peca = String(r.p || '').toLowerCase();
-    const cd = String(r.cd || '').toLowerCase();
-    const sp = String(r.sp || '').toLowerCase();
-    const sl = String(r.sl || '').toLowerCase();
-    const os = String(r.os || '').toLowerCase();
+    const id = __solNorm(r.id);
+    const fref = __solNorm(r.formsRef);
+    const peca = __solNorm(r.p);
+    const cd = __solNorm(r.cd);
+    const sp = __solNorm(r.sp);
+    const sl = __solNorm(r.sl);
+    const os = __solNorm(r.os);
     let score = 0;
     // Match EXATO no id ou formsRef → maior prioridade
     if (id === q) score += 1000;
@@ -17574,50 +17658,86 @@ function go() {
     else if (peca.includes(q)) score += 40;
     // Solicitante
     if (sl.includes(q)) score += 20;
+    // Planta / área / material — encontra, mas vale menos que a peça
+    if (__solNorm(r.pl).includes(q)) score += 15;
+    if (__solNorm(r.ar).includes(q)) score += 10;
+    if (__solNorm(r.materialCompra).includes(q)) score += 10;
     return score;
+  }
+
+  /* Um número solto ("457") quase sempre é o nº do forms. Se algum forms
+     bater, a lista mostra só eles; se nenhum bater, o número é procurado no
+     resto (SAP, cód. do desenho, OS, nota fiscal).                        */
+  let soForms = false;
+  if (/^\d+(\.\d+)?$/.test(q)) {
+    soForms = data.some(r => {
+      const id = __solNorm(r.id), fr = __solNorm(r.formsRef);
+      return id === q || fr === q || id.startsWith(q) || fr.startsWith(q);
+    });
   }
   filtered = data.filter(r => {
     if (pl && r.pl !== pl) return false;
     if (ar && r.ar !== ar) return false;
     if (pr && r.pr !== pr) return false;
     if (st && r.status !== st) return false;
-    // Filtros de data: usam r.dtp (Data de produção) — YYYY-MM-DD
+    // Ano / mês / dia — sobre a data escolhida no seletor (sol. ou produção)
     if (yr || mo || dy) {
-      if (!r.dtp) return false;
-      const [Y, M, D] = r.dtp.split('-');
+      const dv = r[campoDt];
+      if (!dv) return false;
+      const [Y, M, D] = String(dv).split('-');
       if (yr && Y !== yr) return false;
       if (mo && M !== mo) return false;
       if (dy && D !== dy) return false;
     }
     if (q) {
-      // Se o termo é puramente NUMÉRICO (ex: "457"), busca SÓ no id e formsRef
-      // (evita match acidental em SAP, Cód desenho, OS — onde números também aparecem)
-      const isPureNumber = /^\d+$/.test(q);
-      let hay;
-      if (isPureNumber) {
-        hay = [r.id, r.formsRef].join(' ').toLowerCase();
-      } else {
-        hay = [r.p, r.cd, r.sl, r.id, r.os, r.formsRef].join(' ').toLowerCase();
-      }
-      if (!hay.includes(q)) return false;
+      const hay = soForms ? (__solNorm(r.id) + ' ' + __solNorm(r.formsRef)) : __solHay(r);
+      for (let i = 0; i < termos.length; i++) if (hay.indexOf(termos[i]) < 0) return false;
       r._matchScore = _matchScore(r, q);
     } else {
       r._matchScore = 0;
     }
-    // Filtro DEDICADO por SAP da peça
+    // Filtro dedicado por SAP (da peça ou do IRON)
     if (qSap) {
-      const sapStr = String(r.sp || '').toLowerCase();
-      if (!sapStr.includes(qSap.toLowerCase())) return false;
+      const sapStr = __solNorm(r.sp) + ' ' + __solNorm(r.sapIron) + ' ' + __solNorm(r.mpIron);
+      if (sapStr.indexOf(qSap) < 0) return false;
     }
     return true;
   });
   // Marca se há busca ativa pra doSort priorizar relevância
   window._hasSearchQuery = !!q;
   doSort();
-  const sig = [q, qSap, pl, ar, pr, st, yr, mo, dy, sortField, sortDir].join('\u0001');
+  __solAtualizaLimpar({ q, qSap, pl, ar, pr, st, yr, mo, dy });
+  const sig = [q, qSap, pl, ar, pr, st, yr, mo, dy, campoDt, sortField, sortDir].join('\u0001');
   if (sig !== _filtroSig) { _filtroSig = sig; page = 1; }   // filtro mudou → volta pro começo
   render();                                                  // só sincronizou → fica onde está
 }
+
+let __solDeb = null;
+function goDeb() {
+  if (__solDeb) clearTimeout(__solDeb);
+  __solDeb = setTimeout(() => { __solDeb = null; go(); }, 180);
+}
+
+function __solAtualizaLimpar(f) {
+  const b = document.getElementById('fclr');
+  if (!b) return;
+  const n = Object.keys(f).filter(k => f[k]).length;
+  b.style.display = n ? '' : 'none';
+  const el = document.getElementById('fclrN');
+  if (el) el.textContent = n > 1 ? '(' + n + ')' : '';
+}
+
+function limpaFiltros() {
+  ['fsearch', 'fsap'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  ['fpl', 'far', 'fpr', 'fst', 'fyr', 'fmo', 'fdy'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+  page = 1;
+  go();
+  const s = document.getElementById('fsearch');
+  if (s) s.focus();
+}
+
+/* Trocar entre data de solicitação e data de produção refaz a lista de anos. */
+function trocaCampoData() { initFilters(); go(); }
 
 function sb(f) {
   if (sortField===f) sortDir*=-1; else {sortField=f; sortDir=1;}
@@ -20454,7 +20574,7 @@ return {
   getData: () => data,
   persistRec: _persistRec,
   // handlers chamados via onclick/oninput dos elementos dentro de #solicitacoesView
-  go, sb, pg,
+  go, goDeb, limpaFiltros, trocaCampoData, sb, pg,
   openD, closeD, deleteSol, closeDelete, confirmDelete, openNew, closeN, saveN,
   updStatus, rmFile, saveMaterial, saveSapToMaterial, addMatExtra, removeMatExtra, saveMatExtra, saveMatExtraSap,
   editQtPlan,
@@ -24725,6 +24845,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 06/11/2026 09:49</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 06/11/2026 10:09</div>
 </body>
 </html>
