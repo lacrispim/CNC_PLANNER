@@ -2743,7 +2743,7 @@ body.tema-escuro code,body.tema-escuro pre{background:var(--surface3);color:var(
         </label>
 <label class="tb-more-item" style="color:#92400e;font-weight:600;cursor:pointer">
           <span class="tb-more-ico">⬆</span>
-          <span>Importar planilha de compras</span>
+          <span>Atualizar base de compras (planilha)</span>
           <input type="file" accept=".xlsx,.xls" hidden onchange="importarPlanilhaCompras(this.files[0]);this.value='';tbMoreClose()">
         </label>
         <button class="tb-more-item" onclick="importarComprasPlanilha();tbMoreClose()" style="color:#92400e;font-weight:600">
@@ -6462,7 +6462,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       <button class="sol-btn-list" id="btnList" onclick="Sol && Sol.openList()" data-i18n-title="sol.materiaisCompraTitle" title="Lista de materiais a comprar — solicitações com status Aprovação para compra">🛒 <span data-i18n="sol.materiaisCompra">Materiais para Compra</span> <span id="btnListCount" class="sol-btn-list-count">0</span></button>
       <button class="sol-btn-bulk" onclick="Sol && Sol.ratearExistentes()" title="Divide o custo do fornecedor entre a principal e as relacionadas nos grupos criados antes do rateio automático">÷ Ratear relacionadas</button>
       <button class="sol-btn-bulk" onclick="Sol && Sol.openBulkAttach()">↑ <span data-i18n="sol.atrelarDes">Atrelar desenhos</span></button>
-      <label class="sol-btn-bulk" id="btnImpCompras" style="cursor:pointer;color:#92400e;border-color:#92400e55" title="Subir a planilha de compras (BASE GERAL DE COMPRAS) — grava material, fornecedor e custo unitário de cada forms">📦 Importar compras<input type="file" accept=".xlsx,.xls" hidden onchange="importarPlanilhaCompras(this.files[0]);this.value=''"></label>
+      <button class="sol-btn-bulk" id="btnPreencheCompras" onclick="__comprasPreenche()" style="color:#92400e;border-color:#92400e55" title="Lê a base de compras já realizadas e escreve, em cada forms, o material que foi comprado, o fornecedor, o nº do pedido e o custo do material por peça">📦 Preencher material das compras</button>
       <button class="sol-btn-bulk" onclick="exportSolExcel()" title="Exportar as solicitações (com todos os campos do detalhe) para uma planilha Excel">⬇ Exportar Excel</button>
       <button class="sol-btn-new" onclick="Sol && Sol.openNew()">+ <span data-i18n="sol.novaSolicit">Nova solicitação</span></button>
     </div>
@@ -16822,6 +16822,96 @@ function saveSapIron(id, val) {
   }, 350);
 }
 
+/* ══════════ Preencher os forms com as compras já realizadas ══════════
+   Mora aqui dentro porque precisa de `data`, `_addHistory` e `_persistRec`.
+   Os setters normais (saveMaterial, savePedidoIron) são debounced e feitos
+   para digitação — em lote, só o último sobreviveria. Então a gravação é
+   feita direto, registro a registro, com histórico.
+
+   simular = true só conta o que mudaria, sem gravar nada.                 */
+function preencheDasCompras(sobrescrever, simular) {
+  if (!window.__comprasResumoDoForm) return null;
+  const res = { atingidos: 0, vazios: 0, conflito: 0, mat: 0, ped: 0, cu: 0 };
+  const tocados = [];
+  data.forEach(rec => {
+    const c = window.__comprasResumoDoForm(rec);
+    if (!c) return;
+    res.atingidos++;
+    const matAtual = String(rec.materialCompra || '').trim();
+    if (c.material && !matAtual) res.vazios++;
+    else if (c.material && matAtual !== c.material) res.conflito++;
+    if (simular) return;
+
+    let mudou = false;
+    // Material para compra (o 1º) + os demais como materiais adicionais
+    if (c.material && (!matAtual || (sobrescrever && matAtual !== c.material))) {
+      _addHistory(rec, 'materialCompra', 'Material para compra', matAtual, c.material);
+      rec.materialCompra = c.material; res.mat++; mudou = true;
+      const resto = c.materiais.slice(1);
+      const temExtras = (rec.materiaisExtras || []).some(x => String(x || '').trim());
+      if (resto.length && (!temExtras || sobrescrever)) { rec.materiaisExtras = resto.slice(); mudou = true; }
+    }
+    // Fornecedor + nº do pedido
+    const pedAtual = String(rec.pedidoIron || '').trim();
+    if (c.pedido && (!pedAtual || (sobrescrever && pedAtual !== c.pedido))) {
+      _addHistory(rec, 'pedidoIron', 'N° do Pedido de compra IRON', pedAtual, c.pedido);
+      rec.pedidoIron = c.pedido; res.ped++; mudou = true;
+    }
+    // SAP da matéria-prima
+    if (c.sap && !String(rec.mpIron || '').trim()) { rec.mpIron = c.sap; mudou = true; }
+    // Custo do material por peça
+    if (c.porPeca != null) {
+      const cuAtual = parseBRL(rec.cuCnc) || 0;
+      if (!cuAtual || (sobrescrever && Math.abs(cuAtual - c.porPeca) > 0.01)) {
+        const fmtR = v => 'R$ ' + (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        _addHistory(rec, 'cuCnc', 'Custo unit. (CNC)', fmtR(cuAtual), fmtR(c.porPeca));
+        rec.cuCnc = c.porPeca;
+        rec.cprod = (parseInt(rec.qt, 10) || 0) * c.porPeca;
+        res.cu++; mudou = true;
+      }
+    }
+    if (mudou) tocados.push(rec);
+  });
+  if (simular) return res;
+  tocados.forEach(rec => _persistRec(rec));
+  initFilters(); go();
+  return res;
+}
+
+/* Uma solicitação só. */
+function preencheUmDasCompras(id, sobrescrever) {
+  const rec = data.find(d => String(d.id) === String(id));
+  if (!rec || !window.__comprasResumoDoForm) return null;
+  const c = window.__comprasResumoDoForm(rec);
+  if (!c) return null;
+  const matAtual = String(rec.materialCompra || '').trim();
+  if (c.material && (!matAtual || sobrescrever)) {
+    if (matAtual !== c.material) _addHistory(rec, 'materialCompra', 'Material para compra', matAtual, c.material);
+    rec.materialCompra = c.material;
+    const resto = c.materiais.slice(1);
+    const temExtras = (rec.materiaisExtras || []).some(x => String(x || '').trim());
+    if (resto.length && (!temExtras || sobrescrever)) rec.materiaisExtras = resto.slice();
+  }
+  const pedAtual = String(rec.pedidoIron || '').trim();
+  if (c.pedido && (!pedAtual || sobrescrever)) {
+    if (pedAtual !== c.pedido) _addHistory(rec, 'pedidoIron', 'N° do Pedido de compra IRON', pedAtual, c.pedido);
+    rec.pedidoIron = c.pedido;
+  }
+  if (c.sap && !String(rec.mpIron || '').trim()) rec.mpIron = c.sap;
+  if (c.porPeca != null) {
+    const cuAtual = parseBRL(rec.cuCnc) || 0;
+    if (!cuAtual || sobrescrever) {
+      const fmtR = v => 'R$ ' + (v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      if (Math.abs(cuAtual - c.porPeca) > 0.01) _addHistory(rec, 'cuCnc', 'Custo unit. (CNC)', fmtR(cuAtual), fmtR(c.porPeca));
+      rec.cuCnc = c.porPeca;
+      rec.cprod = (parseInt(rec.qt, 10) || 0) * c.porPeca;
+    }
+  }
+  _persistRec(rec);
+  go();
+  return rec;
+}
+
 // ─── Salva o N° do Pedido de compra IRON (debounced) ───
 let _pedidoIronSaveTimer = null;
 function savePedidoIron(id, val) {
@@ -17217,6 +17307,10 @@ window.__comprasHtml = function(r){
     + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">'
     + '<span style="font-size:11.5px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.5px">'
     + '📦 Comprado para este forms</span>'
+    + '<button onclick="__comprasPreencheUm(\'' + String(r.id).replace(/'/g, "\\'") + '\')" '
+    + 'title="Escreve este material, fornecedor, pedido e custo por peça nos campos deste forms" '
+    + 'style="background:none;border:1px solid #d9a441;color:#92400e;border-radius:6px;padding:3px 9px;'
+    + 'font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">↓ Preencher o forms</button>'
     + '<span style="font-size:13px;font-weight:800;color:#78350f">' + brl(total)
     + '<span style="font-size:11px;font-weight:500;color:#a16207"> · ' + itens.length + ' item(ns)</span></span></div>'
     + linhas
@@ -17234,6 +17328,70 @@ window.__comprasHtml = function(r){
           + '</div>'
         : '<div style="margin-top:8px;font-size:11.5px;color:#a16207">Informe a quantidade de peças da solicitação para o app calcular o custo por peça.</div>')
     + '</div>';
+};
+
+/* O que a planilha de compras diz sobre um forms, já no formato que vai
+   para os campos da solicitação. As compras são COMPRAS JÁ FEITAS: isto aqui
+   não pede nada, só transcreve o que o time comprou para dentro do forms.  */
+window.__comprasResumoDoForm = function(r){
+  const itens = window.__comprasDoForm(r);
+  if (!itens.length) return null;
+  const uniq = a => [...new Set(a.map(x => String(x || '').trim()).filter(Boolean))];
+  const descs = uniq(itens.map(x => x.desc));
+  const forns = uniq(itens.map(x => x.forn));
+  const peds  = uniq(itens.map(x => x.pedido));
+  const saps  = uniq(itens.map(x => x.sap));
+  const total = itens.reduce((a, x) => a + (Number(x.vt) || 0), 0);
+  const qt = parseInt(r.qt, 10) || 0;
+  return {
+    materiais:  descs,                 // 1º vai no campo principal, resto nos "materiais adicionais"
+    material:   descs[0] || '',
+    fornecedor: forns.join(' / '),
+    /* O campo do detalhe se chama "N° do Pedido de compra IRON" e a base
+       antiga já vinha no formato "FORNECEDOR PO12345" — mantém o costume. */
+    pedido:     (forns.join(' / ') + (peds.length ? ' ' + peds.join(' / ') : '')).trim(),
+    sap:        saps[0] || '',
+    porPeca:    qt ? Math.round((total / qt) * 100) / 100 : null,
+    total:      Math.round(total * 100) / 100,
+    nItens:     itens.length
+  };
+};
+
+/* Preenche os forms com o que foi comprado. Sem arquivo nenhum: usa a base
+   que já está carregada (embutida no app + o que veio do Firebase).       */
+window.__comprasPreenche = function(){
+  if (!window.Sol || !Sol.preencheDasCompras) { alert('As solicitações ainda não carregaram. Tente de novo em alguns segundos.'); return; }
+  const prev = Sol.preencheDasCompras(false, true);   // só conta, não grava
+  if (!prev || !prev.atingidos) {
+    alert('Nenhuma solicitação bateu com a base de compras.\n\nSe a planilha é nova, use "⬆ Atualizar base de compras" no menu ⋯ antes.');
+    return;
+  }
+  let sobrescrever = false;
+  if (prev.conflito) {
+    sobrescrever = confirm(
+      prev.atingidos + ' solicitação(ões) têm compra registrada.\n\n'
+      + '• ' + prev.vazios + ' estão com o material em branco e vão ser preenchidas.\n'
+      + '• ' + prev.conflito + ' já têm um material escrito, diferente do que está na planilha.\n\n'
+      + 'OK = substituir também essas ' + prev.conflito + ' pelo que a planilha diz.\n'
+      + 'Cancelar = preencher só as que estão em branco.');
+  }
+  const res = Sol.preencheDasCompras(sobrescrever, false);
+  alert('✓ Forms preenchidos a partir das compras\n\n'
+      + 'Material: ' + res.mat + '\n'
+      + 'Fornecedor / pedido: ' + res.ped + '\n'
+      + 'Custo do material por peça: ' + res.cu + '\n\n'
+      + res.atingidos + ' solicitação(ões) com compra registrada'
+      + (!sobrescrever && res.conflito ? '\n' + res.conflito + ' ficaram como estavam (já tinham outro material escrito)' : '')
+      + '\n\nTudo gravado e enviado para a nuvem.');
+};
+
+/* Um forms só — botão dentro do detalhe. */
+window.__comprasPreencheUm = function(id){
+  if (!window.Sol || !Sol.preencheUmDasCompras) return;
+  const r = Sol.preencheUmDasCompras(id, true);
+  if (!r) { alert('Não achei compras para este forms.'); return; }
+  if (window.toast) toast('✓ Material, fornecedor e custo preenchidos pela planilha de compras', 'success');
+  if (Sol.openD) Sol.openD(id);
 };
 
 window.__comprasGravaCusto = function(id, valor){
@@ -17310,9 +17468,10 @@ window.importarPlanilhaCompras = function(arq){
         catch (e) { alert('A planilha é grande demais para o navegador guardar: ' + (e.message || e)); return; }
         __comprasMpCarrega();
         if (typeof render === 'function') { try { render(); } catch (e) {} }
-        alert('✓ Planilha de compras importada\n\n' + linhas + ' linha(s) · ' + Object.keys(f).length + ' forms · '
+        const segue = confirm('✓ Base de compras atualizada\n\n' + linhas + ' linha(s) · ' + Object.keys(f).length + ' forms · '
             + itens.length + ' materiais distintos\nR$ ' + total.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
-            + '\n\nA base ficou gravada e vai para a nuvem — abra uma solicitação para ver o que foi comprado nela.');
+            + '\n\nQuer preencher agora os forms com esse material, fornecedor e custo por peça?');
+        if (segue && window.__comprasPreenche) window.__comprasPreenche();
       } catch (e) { alert('Erro ao ler a planilha: ' + (e.message || e)); }
     };
     fr.readAsArrayBuffer(arq);
@@ -20574,7 +20733,7 @@ return {
   getData: () => data,
   persistRec: _persistRec,
   // handlers chamados via onclick/oninput dos elementos dentro de #solicitacoesView
-  go, goDeb, limpaFiltros, trocaCampoData, sb, pg,
+  go, goDeb, limpaFiltros, trocaCampoData, preencheDasCompras, preencheUmDasCompras, sb, pg,
   openD, closeD, deleteSol, closeDelete, confirmDelete, openNew, closeN, saveN,
   updStatus, rmFile, saveMaterial, saveSapToMaterial, addMatExtra, removeMatExtra, saveMatExtra, saveMatExtraSap,
   editQtPlan,
@@ -24845,6 +25004,6 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 06/11/2026 10:09</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 09/11/2026 08:33</div>
 </body>
 </html>
