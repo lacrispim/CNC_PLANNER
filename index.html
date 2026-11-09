@@ -189,6 +189,8 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-size:13px
   box-shadow:0 12px 40px rgba(16,185,129,.25);
 }
 .entry-card-apont .entry-card-title{color:#10b981;}
+.entry-card-notas:hover{border-color:#335fea;box-shadow:0 12px 40px rgba(51,95,234,.25);}
+.entry-card-notas .entry-card-title{color:#335fea;}
 .entry-icon{
   font-size:64px;margin-bottom:8px;
   filter:drop-shadow(0 4px 8px rgba(0,0,0,.4));
@@ -2634,6 +2636,13 @@ body.tema-escuro code,body.tema-escuro pre{background:var(--surface3);color:var(
         <div class="entry-card-sub">Impressão 3D</div>
         <div class="entry-card-desc">Gestão das peças impressas: solicitações, materiais e produção</div>
         <div class="entry-card-tabs">SOLICITAÇÕES · PROGRAMAÇÃO · CUSTOS · MATERIAIS</div>
+      </div>
+      <div class="entry-card entry-card-notas" onclick="torreChoose('notas')">
+        <div class="entry-icon">🧾</div>
+        <div class="entry-card-title">NOTAS E ENTREGAS</div>
+        <div class="entry-card-sub">Materiais, SAP e nota fiscal</div>
+        <div class="entry-card-desc">O caminho do material: cadastro, bloco de até 4, pedido no SAP e a nota quando chega</div>
+        <div class="entry-card-tabs">LANÇAMENTOS · BLOCOS · NOTAS FISCAIS · CONSULTA</div>
       </div>
     </div>
     <div style="margin-top:18px;text-align:center">
@@ -14397,7 +14406,13 @@ const FB_KEY_MAP = {
   'cnc_almox_mov_v1':     '/almox_mov',
   'cnc_almox_mat_v1':     '/almox_mat',
   'cnc_almox_mat_mov_v1': '/almox_mat_mov',
-  'cnc_compras_mp_v1':    '/compras_mp'
+  'cnc_compras_mp_v1':    '/compras_mp',
+  'cnc_ne_materiais_v1':  '/ne_materiais',
+  'cnc_ne_blocos_v1':     '/ne_blocos',
+  'cnc_ne_notas_v1':      '/ne_notas',
+  'cnc_ne_vinculos_v1':   '/ne_vinculos',
+  'cnc_ne_sites_v1':      '/ne_sites',
+  'cnc_ne_hist_v1':       '/ne_hist'
 };
 
 
@@ -17916,12 +17931,21 @@ function doSort() {
       if (sa !== sb_) return sb_ - sa;  // maior score primeiro
     }
     if (sortField === 'id') {
-      /* Ordem do Nº: primeiro o que veio do MRP, depois os formulários de
-         número normal em sequência (915, 915.1, 915.2 … 915.10, 916),
-         por último os demais (manuais M000xx etc.). Clicar no cabeçalho
-         inverte a sequência dentro de cada grupo; o MRP continua no topo. */
-      const ka = _solChaveNr(a.id), kb = _solChaveNr(b.id);
+      /* Ordem padrão da lista, em três blocos:
+           0) tudo que veio do MRP — com a sigla (MRP/MRPS) ou só o número
+              comprido do SAP — fica no começo da primeira página;
+           1) depois os forms sem data de abertura, em sequência de número
+              (915, 915.1 … 915.10, 916);
+           2) por último os demais, da abertura mais antiga para a mais
+              recente — assim a ÚLTIMA página mostra os forms abertos por
+              último.
+         Clicar no cabeçalho Nº inverte dentro de cada bloco; o MRP continua
+         no topo.                                                           */
+      const ka = _solChaveNr(a), kb = _solChaveNr(b);
       if (ka.g !== kb.g) return ka.g - kb.g;
+      // entre os sem data, os manuais (M000xx) ficam no fim
+      if (ka.g !== 2 && ka.m !== kb.m) return ka.m - kb.m;
+      if (ka.g === 2 && ka.d !== kb.d) return ka.d < kb.d ? -sortDir : sortDir;
       for (let i = 0; i < Math.max(ka.n.length, kb.n.length); i++) {
         const x = ka.n[i] == null ? -1 : ka.n[i], y = kb.n[i] == null ? -1 : kb.n[i];
         if (x !== y) return (x - y) * sortDir;
@@ -17937,11 +17961,38 @@ function doSort() {
   });
 }
 
-function _solChaveNr(id) {
+/* Aceita 2026-09-16 e 16/09/2026. */
+function _solData(v) {
+  const t = String(v == null ? '' : v).trim();
+  if (!t) return '';
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return m[1] + m[2] + m[3];
+  m = t.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/);
+  if (m) return m[3] + ('0' + m[2]).slice(-2) + ('0' + m[1]).slice(-2);
+  return '';
+}
+
+/* MRP = o que tem a sigla MRP/MRPS ou o número comprido do SAP (>= 7 dígitos,
+   tipo 6494006822). Os forms normais vão até 4 dígitos, então não colidem. */
+function _solEhMRP(id) {
   const t = String(id == null ? '' : id).trim();
-  if (/^MRP/i.test(t)) return { g: 0, n: (t.match(/\d+/g) || []).map(Number), t: t.toLowerCase() };
-  if (/^\d/.test(t)) return { g: 1, n: (t.match(/^\d+(\.\d+)*/)[0]).split('.').map(Number), t: t.toLowerCase() };   // 915, 915.10, 467.A, 351 3D
-  return { g: 2, n: (t.match(/\d+/g) || []).map(Number), t: t.toLowerCase() };
+  if (/^MRPS?\b/i.test(t)) return true;
+  const m = t.match(/^\d+/);
+  return !!m && m[0].length >= 7;
+}
+
+function _solChaveNr(r) {
+  const id = r && typeof r === 'object' ? r.id : r;
+  const t = String(id == null ? '' : id).trim();
+  const num = s2 => (s2.match(/\d+/g) || []).map(Number);
+  const man = /^\d/.test(t) ? 0 : 1;                       // 0 = forms numérico, 1 = manual (M000xx)
+  if (_solEhMRP(t)) return { g: 0, m: 0, n: num(t), t: t.toLowerCase(), d: '' };
+  const abert = (r && typeof r === 'object') ? _solData(r.dt) : '';   // data de abertura do forms
+  const base = /^\d/.test(t)
+    ? { n: (t.match(/^\d+(\.\d+)*/)[0]).split('.').map(Number), t: t.toLowerCase() }   // 915, 915.10, 467.A, 351 3D
+    : { n: num(t), t: t.toLowerCase() };
+  return abert ? { g: 2, m: man, n: base.n, t: base.t, d: abert }   // tem data → ordena por ela
+               : { g: 1, m: man, n: base.n, t: base.t, d: '' };     // sem data de abertura
 }
 
 function render() {
@@ -22549,6 +22600,7 @@ function torreChoiceBack() {
 function torreChoose(tec) {
   torreChoiceHide();
   if (tec === '3d') { open3D(); return; }
+  if (tec === 'notas') { openNotas(); return; }
   const ent = document.getElementById('entryOverlay');
   if (ent) ent.style.display = 'none';
   _entryDoSelect('torre');
@@ -22585,6 +22637,40 @@ function close3D() {
   if (ov) ov.style.display = 'none';
   torreChoiceShow();
 }
+
+/* ═══ MÓDULO NOTAS E ENTREGAS — materiais SAP, blocos e notas fiscais ═══ */
+function openNotas() {
+  let ov = document.getElementById('mneOverlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'mneOverlay';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:100005;background:#f6f8fc;display:flex;flex-direction:column;font-family:inherit';
+    ov.innerHTML =
+      '<div style="height:52px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 16px;background:#335fea;color:#fff">'
+      + '<button onclick="closeNotas()" style="border:none;background:rgba(255,255,255,.18);color:#fff;border-radius:8px;padding:7px 13px;font-size:13px;font-weight:600;cursor:pointer">← Voltar</button>'
+      + '<span style="font-weight:700;font-size:15px">🧾 Notas e Entregas</span>'
+      + '</div>'
+      + '<div id="mneBody" style="flex:1;overflow:auto;min-height:0"></div>';
+    document.body.appendChild(ov);
+  }
+  ov.style.display = 'flex';
+  const body = document.getElementById('mneBody');
+  if (body && window.MNE) {
+    try { window.MNE.mount(body); }
+    catch (e) {
+      body.innerHTML = '<div style="color:#b91c1c;padding:24px">Erro ao abrir Notas e Entregas: ' + (e.message || e) + '</div>';
+      console.error('[NE]', e);
+    }
+  }
+}
+function closeNotas() {
+  const ov = document.getElementById('mneOverlay');
+  if (ov) ov.style.display = 'none';
+  const t = document.getElementById('neToast'); if (t) t.remove();
+  torreChoiceShow();
+}
+window.openNotas = openNotas;
+window.closeNotas = closeNotas;
 
 window.torreChoiceShow = torreChoiceShow;
 window.torreChoiceBack = torreChoiceBack;
@@ -22687,7 +22773,13 @@ async function fbBootstrap() {
     '/almox_mov':     'cnc_almox_mov_v1',
     '/almox_mat':     'cnc_almox_mat_v1',
     '/almox_mat_mov': 'cnc_almox_mat_mov_v1',
-    '/compras_mp':    'cnc_compras_mp_v1'
+    '/compras_mp':    'cnc_compras_mp_v1',
+    '/ne_materiais':  'cnc_ne_materiais_v1',
+    '/ne_blocos':     'cnc_ne_blocos_v1',
+    '/ne_notas':      'cnc_ne_notas_v1',
+    '/ne_vinculos':   'cnc_ne_vinculos_v1',
+    '/ne_sites':      'cnc_ne_sites_v1',
+    '/ne_hist':       'cnc_ne_hist_v1'
   };
 
   for (const fbPath in mergeStrategy) {
@@ -25004,6 +25096,1660 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 09/11/2026 08:33</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 09/11/2026 10:52</div>
+<style>
+/* ═══ MÓDULO NOTAS E ENTREGAS ═══
+   Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
+   para o CNC nem para o 3D. A paleta é a do projeto original. */
+.ne-shell{--ne-ink:#1a2640;--ne-muted:#778298;--ne-primary:#335fea;--ne-line:#e6ebf3;--ne-nav:#121c2e;--ne-bg:#f6f8fc;
+  display:flex;align-items:stretch;min-height:100%;background:var(--ne-bg);color:var(--ne-ink);
+  font-family:'DM Sans',system-ui,-apple-system,'Segoe UI',sans-serif;font-size:13px}
+.ne-shell *{box-sizing:border-box}
+.ne-shell button{cursor:pointer;border:0;font:inherit}
+.ne-shell button:disabled{cursor:not-allowed;opacity:.45}
+.ne-shell input:not([type=checkbox]),.ne-shell select,.ne-shell textarea{
+  border:1px solid #dfe5ed;border-radius:8px;padding:9px 11px;width:100%;background:#fff;color:#2c3c57;font:inherit;font-size:12px;outline:none}
+.ne-shell input:focus,.ne-shell select:focus,.ne-shell textarea:focus{border-color:#8ba6ff;box-shadow:0 0 0 3px #376bec18}
+.ne-shell input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:#335fea}
+.ne-shell h1,.ne-shell h2,.ne-shell h3{margin:0;letter-spacing:-.04em}
+.ne-shell p{margin:0}
+
+/* ── barra lateral ── */
+.ne-side{background:var(--ne-nav);color:#fff;width:244px;flex:0 0 244px;display:flex;flex-direction:column;position:sticky;top:0;align-self:stretch}
+.ne-brand{height:84px;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid #ffffff12}
+.ne-brand-mark{display:grid;place-items:center;width:42px;height:42px;border-radius:13px;color:#fff;font-weight:800;font-size:14px;
+  background:linear-gradient(135deg,#477dfb,#5d50d8);box-shadow:0 9px 20px #4468e92e;flex-shrink:0}
+.ne-brand strong{font-size:16px;font-weight:800;display:block}
+.ne-brand span{display:block;margin-top:2px;font-size:9px;letter-spacing:.18em;color:#909fb9;font-weight:700}
+.ne-nav-label{color:#66758e;font-size:10px;font-weight:800;letter-spacing:.13em;margin:28px 22px 12px}
+.ne-side nav{display:grid;gap:4px;padding:0 10px}
+.ne-nav-item{height:42px;padding:0 12px;display:flex;gap:11px;align-items:center;background:transparent;color:#9aa9c0;
+  border-radius:9px;text-align:left;font-size:13px;font-weight:600;transition:background .14s;width:100%}
+.ne-nav-item:hover{color:#fff;background:#ffffff0c}
+.ne-nav-item.ativo{color:#fff;background:#2a3952}
+.ne-nav-ico{width:18px;text-align:center;opacity:.9}
+.ne-side-bottom{margin-top:auto;border-top:1px solid #ffffff12;padding:16px 18px}
+.ne-cloud{display:flex;align-items:center;gap:9px;font-size:11px;color:#a6b4c9}
+.ne-dot{width:7px;height:7px;border-radius:50%;background:#46d6ac;box-shadow:0 0 0 4px #46d6ac1c;flex-shrink:0}
+
+/* ── coluna principal ── */
+.ne-main{min-width:0;flex:1;display:flex;flex-direction:column}
+.ne-top{height:64px;background:#fff;border-bottom:1px solid var(--ne-line);padding:0 28px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.ne-crumb{font-size:12px;color:#a1abb9}
+.ne-crumb strong{color:#414e68;font-weight:700}
+.ne-top-acoes{font-size:12px;color:#7a859a}
+.ne-content{padding:28px;flex:1;min-width:0;max-width:1740px;width:100%;margin:0 auto}
+.ne-head{display:flex;justify-content:space-between;align-items:flex-end;gap:22px;margin-bottom:22px;flex-wrap:wrap}
+.ne-eyebrow{display:block;color:#4370db;letter-spacing:.14em;font-size:10px;font-weight:800;margin-bottom:8px}
+.ne-head h1{font-size:26px;line-height:1.2;margin-bottom:7px;font-weight:800}
+.ne-head p{color:var(--ne-muted);font-size:13px}
+.ne-head-acoes{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+
+/* ── botões ── */
+.ne-btn{display:inline-flex;justify-content:center;align-items:center;gap:7px;border-radius:8px;background:#335fea;padding:10px 15px;
+  color:#fff;font-size:12px;font-weight:750;white-space:nowrap;min-height:37px;transition:background .12s,transform .12s}
+.ne-btn:hover:not(:disabled){transform:translateY(-1px);background:#2851cf}
+.ne-btn-sm{min-height:31px;padding:7px 11px;font-size:11px}
+.ne-btn-sec{background:#fff;color:#41516c;border:1px solid #dde5f0}
+.ne-btn-sec:hover:not(:disabled){background:#f5f8ff;color:#305de3}
+.ne-btn-danger{background:#fff1f1;color:#c13c52;border:1px solid #f5d9dd}
+.ne-btn-danger:hover:not(:disabled){background:#fbe6e8;color:#b3243f}
+.ne-ico{background:transparent;display:inline-grid;place-items:center;border-radius:8px;min-width:30px;height:30px;padding:4px;color:#758096;font-size:14px}
+.ne-ico:hover:not(:disabled){background:#edf1f8;color:#315ccf}
+.ne-ico-danger:hover:not(:disabled){background:#fee2e2;color:#c13c52}
+.ne-link{background:none;color:#6183c4;font-size:11px;font-weight:750;padding:4px 8px}
+.ne-link:hover{text-decoration:underline}
+
+/* ── cartões e painéis ── */
+.ne-panel{background:#fff;border:1px solid #e8edf4;border-radius:13px;box-shadow:0 2px 12px #1c2e5b04;padding:20px;min-width:0;margin-bottom:18px}
+.ne-subhead{display:flex;justify-content:space-between;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap}
+.ne-subhead h2{font-size:15px;margin-bottom:4px;font-weight:800}
+.ne-subhead p{font-size:11px;color:#8791a3}
+.ne-subhead.ne-compact{margin:20px 0 10px}
+.ne-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:18px}
+.ne-stat{background:#fff;border:1px solid #e8edf4;border-radius:13px;padding:18px;box-shadow:0 2px 12px #1c2e5b04;min-width:0}
+.ne-stat-accent{border-color:#dbe6ff;background:linear-gradient(135deg,#fff 10%,#f4f7ff)}
+.ne-stat-top{display:flex;align-items:center;justify-content:space-between;gap:6px;color:#79859a;font-size:11px;font-weight:650;margin-bottom:8px}
+.ne-stat-ico{display:grid;place-items:center;width:33px;height:33px;border-radius:10px;background:#edf3ff;font-size:15px;flex-shrink:0}
+.ne-stat strong{font-size:25px;letter-spacing:-.05em;display:block;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ne-stat small{display:block;color:#9ca5b3;font-size:11px;margin-top:6px}
+.ne-dash-grid{display:grid;grid-template-columns:minmax(0,2.3fr) minmax(250px,1fr);gap:18px;align-items:start}
+.ne-quick-list{display:grid;gap:6px}
+.ne-quick-item{display:flex;align-items:center;gap:12px;text-align:left;background:#fff;border:1px solid #edf0f6;border-radius:10px;padding:12px;width:100%;color:#92a0b6;transition:all .12s}
+.ne-quick-item:hover{background:#f8faff;border-color:#cad9ff}
+.ne-quick-ico{display:grid;place-items:center;border-radius:9px;width:37px;height:37px;background:#f0f4fd;color:#4272e7;flex-shrink:0;font-size:15px}
+.ne-quick-item>span:nth-child(2){flex:1;min-width:0}
+.ne-quick-item strong{display:block;color:#273651;font-size:12px}
+.ne-quick-item small{display:block;font-size:10px;color:#91a0b4;margin-top:4px}
+.ne-workflow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:linear-gradient(100deg,#edf3ff,#f0faf6);
+  padding:12px 15px;border-radius:12px;margin-bottom:16px;color:#33445e;font-size:12px;border:1px solid #dce6f3;line-height:1.7}
+.ne-workflow b{color:#183e76}
+.ne-notice{border:1px solid #dce6ff;border-radius:9px;padding:12px 13px;color:#56719c;background:#f4f7ff;display:flex;gap:9px;font-size:11.5px;line-height:1.65;margin:14px 0}
+
+/* ── tabela ── */
+.ne-table-wrap{max-width:100%;overflow:auto;border:1px solid #edf0f5;border-radius:9px}
+.ne-shell table{border-collapse:separate;border-spacing:0;width:100%;font-size:11.5px;text-align:left;min-width:900px}
+.ne-shell thead{background:#f8fafd}
+.ne-shell th{padding:12px;color:#7d899b;font-size:10px;letter-spacing:.035em;text-transform:uppercase;font-weight:800;border-bottom:1px solid #e8edf3;white-space:nowrap}
+.ne-shell td{padding:11px 12px;border-bottom:1px solid #eff2f6;vertical-align:middle;color:#4c5a73}
+.ne-shell tbody tr:hover{background:#fcfdff}
+.ne-shell tbody tr:last-child td{border-bottom:0}
+.ne-col-check{width:36px}
+.ne-matname{display:block;color:#2d3a52;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ne-sub{display:block;color:#98a3b2;margin-top:4px;font-size:10px}
+.ne-codes{display:grid;gap:3px;white-space:nowrap}
+.ne-codes span:first-child{color:#305ee3;font-weight:750}
+.ne-codes span:last-child{font-size:10px;color:#8795ad}
+.ne-muted{color:#8a96a8;font-size:11px}
+.ne-num{text-align:right;font-variant-numeric:tabular-nums}
+.ne-strong{font-weight:750;color:#27354e}
+.ne-nowrap{white-space:nowrap}
+.ne-pill{background:#eff3f9;color:#62718d;padding:5px 8px;border-radius:6px;font-size:10px;font-weight:700;white-space:nowrap;display:inline-block}
+.ne-status{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;white-space:nowrap;border-radius:20px;font-weight:750;font-size:10px}
+.ne-proc{display:inline-flex;align-items:center;white-space:nowrap;font-size:10px;font-weight:750;border-radius:6px;padding:5px 7px;border:1px solid transparent}
+.ne-pag{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 0 0;color:#8592a6;font-size:11px}
+.ne-pag>div{display:flex;gap:8px}
+.ne-pag .ne-ico{border:1px solid #e3e8f1}
+.ne-empty{padding:40px 24px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:9px;color:#8b97ab}
+.ne-empty-ico{display:grid;place-items:center;background:#f2f5fa;width:56px;height:56px;border-radius:17px;font-size:24px}
+.ne-empty strong{font-size:13px;color:#34435e}
+.ne-empty span{font-size:11px}
+
+/* ── filtros ── */
+.ne-filters{display:flex;flex-wrap:wrap;gap:8px;width:100%;margin-bottom:9px}
+.ne-filters>select{flex:1 1 150px;min-width:130px;height:38px;padding:7px 10px}
+.ne-search{display:flex;align-items:center;gap:8px;border:1px solid #dfe6ef;border-radius:8px;padding:0 11px;background:#fff;color:#8a96aa;flex:2 1 230px;min-width:190px;height:38px}
+.ne-search:focus-within{border-color:#8ca6ff;box-shadow:0 0 0 3px #376bec18}
+.ne-search input{border:0!important;box-shadow:none!important;background:transparent;width:100%;padding:0;min-width:0}
+.ne-filters-extra{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.ne-filters-extra>label{display:flex;flex-direction:column;gap:5px;color:var(--ne-muted);font-size:11px;font-weight:700;min-width:118px;flex:0 1 150px}
+.ne-sort{display:flex;gap:7px;align-items:center;justify-content:flex-end;color:#8794a8;font-size:11px;margin-bottom:10px}
+.ne-sort select{width:auto;min-width:160px;height:34px;padding:5px 10px}
+.ne-bulk{display:flex;gap:9px;align-items:center;background:#f2f6ff;border:1px solid #dce7ff;border-radius:8px;padding:9px 12px;margin-bottom:11px;font-size:11px;flex-wrap:wrap}
+.ne-bulk strong{color:#355ba7}
+.ne-bulk select{max-width:180px;width:auto;padding:7px 9px}
+
+/* ── blocos ── */
+.ne-block-toolbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:14px}
+.ne-block-toolbar select{width:190px;flex:0 0 auto;height:38px;padding:7px 10px}
+.ne-blocks-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+.ne-block{padding:0;overflow:hidden;border-top:5px solid #d4dbe8}
+.ne-block-cnc{border-top-color:#4b7bec;background:linear-gradient(180deg,#f5f8ff,#fff 150px)}
+.ne-block-3d{border-top-color:#25a16b;background:linear-gradient(180deg,#f2fcf7,#fff 150px)}
+.ne-block-outro{border-top-color:#a4afc3}
+.ne-block-head{padding:19px 20px 15px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;border-bottom:1px solid var(--ne-line)}
+.ne-block-idx{font-size:9px;letter-spacing:.14em;font-weight:800;color:#6584d1;margin-bottom:7px}
+.ne-block-head h2{font-size:16px;margin-bottom:6px}
+.ne-block-proc{margin:7px 0}
+.ne-block-stage{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px;font-size:10px;font-weight:700}
+.ne-block-stage span{padding:5px 8px;border-radius:7px;background:#f1f3f8;color:#52617c}
+.ne-block-stage .ne-stage-d{background:#edf1f7;color:#596a84}
+.ne-block-stage .ne-stage-r{background:#fff4db;color:#9a6315}
+.ne-block-stage .ne-stage-i{background:#e5f8ed;color:#257549}
+.ne-count{border-radius:20px;background:#eaf0fc;color:#416dc4;padding:6px 11px;font-size:11px;font-weight:800;white-space:nowrap;flex-shrink:0}
+.ne-count.cheio{color:#288462;background:#e6f6ed}
+.ne-block-acoes{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:rgba(237,243,255,.55);border-bottom:1px solid #e5eaf3}
+.ne-block-acoes .ne-btn{flex:1 1 170px}
+.ne-block-ops{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:11px 16px;background:#fafbfe;flex-wrap:wrap;font-size:11px;border-bottom:1px solid #eef1f6}
+.ne-block-st{display:flex;align-items:center;gap:7px;color:#677793}
+.ne-block-st select{width:135px;padding:6px 8px}
+.ne-inline{display:flex;gap:3px}
+.ne-block-items{max-height:430px;overflow:auto}
+.ne-block-item{display:flex;gap:10px;padding:11px 16px;align-items:center;border-bottom:1px solid #f0f3f7;border-left:3px solid transparent}
+.ne-block-item:hover{background:#fafcff}
+.ne-block-item:last-child{border-bottom:0}
+.ne-item-cnc{border-left-color:#86a7ff}
+.ne-item-3d{border-left-color:#74cfa9}
+.ne-block-item-main{min-width:0;flex:1}
+.ne-block-item-main strong{display:block;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#2d3a52}
+.ne-block-item-main small{font-size:10px;color:#92a0b4;display:block;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ne-block-vazio{padding:26px;text-align:center;color:#92a0b4;font-size:11.5px}
+
+/* ── notas fiscais ── */
+.ne-inv-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.ne-inv-card{border:1px solid #e8edf4;border-radius:11px;padding:18px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.ne-inv-top{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.ne-inv-top .ne-eyebrow{margin-bottom:4px}
+.ne-inv-card h3{font-size:18px;margin-bottom:5px}
+.ne-inv-card p{color:#8d99aa;font-size:11px}
+.ne-inv-valor{font-size:15px;font-weight:800;white-space:nowrap;color:#274eb5}
+.ne-inv-tags{display:flex;gap:6px;flex-wrap:wrap}
+.ne-inv-tag{background:#f0f4fa;border-radius:6px;padding:6px 9px;font-size:10px;color:#65748d}
+.ne-key{display:flex;align-items:center;justify-content:space-between;gap:8px;background:#f8faff;border-radius:8px;padding:7px 10px;color:#8d99aa;font-size:10px;min-width:0}
+.ne-key>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ne-key code{color:#495c78}
+.ne-inv-acoes{display:flex;gap:7px;flex-wrap:wrap}
+.ne-inv-busca{margin-bottom:10px}
+.ne-picker{max-height:230px;overflow:auto;border:1px solid #e5eaf3;border-radius:9px}
+.ne-choice{display:flex;align-items:center;gap:11px;padding:11px 12px;border-bottom:1px solid #eef1f6;cursor:pointer}
+.ne-choice:last-child{border:0}
+.ne-choice:hover{background:#fafbff}
+.ne-choice.escolhido{background:#f0f5ff}
+.ne-choice-main{flex:1;min-width:0}
+.ne-choice-main strong{font-size:12px;display:block;color:#2d3a52}
+.ne-choice-main small{font-size:10px;display:block;color:#8592a7;margin-top:4px}
+.ne-picker-empty{padding:26px;text-align:center;font-size:12px;color:#8997aa}
+.ne-inv-total{display:flex;align-items:center;justify-content:space-between;padding:15px 0;color:#8491a5;font-size:12px}
+.ne-inv-total strong{color:#274eb5;font-size:18px}
+
+/* ── consulta, histórico, configurações ── */
+.ne-batch textarea{resize:vertical;width:100%;line-height:1.6;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.ne-batch-bottom{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:9px;font-size:11px}
+.ne-batch-prev{border:1px solid #ebf0f6;border-radius:9px;margin-top:13px;max-height:190px;overflow:auto}
+.ne-batch-prev>div{display:grid;grid-template-columns:150px 1fr;gap:14px;padding:9px 12px;border-bottom:1px solid #f0f3f8;font-size:11px}
+.ne-batch-prev>div:last-child{border-bottom:0}
+.ne-batch-prev strong{color:#3866d5}
+.ne-batch-prev span{color:#586981}
+.ne-activity{display:grid}
+.ne-act{display:flex;gap:12px;align-items:center;padding:13px 4px;border-bottom:1px solid var(--ne-line)}
+.ne-act:last-child{border:0}
+.ne-act-ico{width:33px;height:33px;display:grid;place-items:center;background:#f0f5ff;color:#5073cf;border-radius:10px;flex-shrink:0}
+.ne-act>div:nth-child(2){flex:1;min-width:0}
+.ne-act strong{font-size:11.5px;display:block;color:#2d3a52}
+.ne-act small{font-size:11px;color:#8694aa;display:block;margin-top:4px;word-break:break-word}
+.ne-act time{font-size:10px;color:#a3aebd;white-space:nowrap}
+.ne-settings-grid{display:grid;grid-template-columns:1.3fr 1fr;gap:18px;align-items:start}
+.ne-site-row{display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--ne-line);padding:12px 0}
+.ne-site-row:last-of-type{border-bottom:0}
+.ne-site-ico{width:37px;height:37px;display:grid;place-items:center;background:#f0f5ff;border-radius:9px;flex-shrink:0}
+.ne-site-row>div:nth-child(2){flex:1;min-width:0}
+.ne-site-row strong{display:block;font-size:12px;color:#2d3a52}
+.ne-site-row small{color:#9ca6b8;font-size:11px;display:block;margin-top:3px}
+.ne-set-det{display:flex;justify-content:space-between;gap:10px;font-size:12px;padding:13px 0;border-bottom:1px solid var(--ne-line);color:#8794a6}
+.ne-set-det b{color:#2d3a52}
+
+/* ── modais ── */
+.ne-backdrop{position:fixed;inset:0;z-index:100010;background:#101c30aa;display:flex;align-items:center;justify-content:center;padding:20px}
+.ne-modal{background:#fff;border-radius:14px;width:100%;max-width:470px;box-shadow:0 28px 100px #0004;max-height:calc(100vh - 40px);
+  display:flex;flex-direction:column;overflow:hidden;font-family:'DM Sans',system-ui,-apple-system,sans-serif;color:#1a2640;font-size:13px}
+.ne-modal-wide{max-width:820px}
+.ne-modal *{box-sizing:border-box}
+.ne-modal button{cursor:pointer;border:0;font:inherit}
+.ne-modal input:not([type=checkbox]),.ne-modal select,.ne-modal textarea{border:1px solid #dfe5ed;border-radius:8px;padding:10px 12px;width:100%;background:#fff;color:#2c3c57;font:inherit;font-size:12px;outline:none}
+.ne-modal input:focus,.ne-modal select:focus,.ne-modal textarea:focus{border-color:#8ba6ff;box-shadow:0 0 0 3px #376bec18}
+.ne-modal input:disabled,.ne-modal select:disabled,.ne-modal textarea:disabled{background:#f4f6fa;color:#94a0b4;cursor:not-allowed}
+.ne-modal-top{display:flex;justify-content:space-between;align-items:center;padding:19px 22px;border-bottom:1px solid #e6ebf3;flex-shrink:0}
+.ne-modal-top h2{margin:0;font-size:18px;letter-spacing:-.04em}
+.ne-modal-body{overflow:auto;padding:22px}
+.ne-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.ne-span2{grid-column:span 2}
+.ne-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ne-flabel{font-size:11px;font-weight:750;color:#485875}
+.ne-fhint{font-size:10px;color:#a1aaba}
+.ne-modal-acoes{display:flex;justify-content:flex-end;gap:9px;align-items:center;flex-wrap:wrap;margin-top:20px}
+.ne-grow{flex:1}
+.ne-paste{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical;margin-top:14px;line-height:1.6}
+.ne-modal .ne-btn,.ne-modal .ne-ico,.ne-modal .ne-search,.ne-modal .ne-notice,.ne-modal .ne-count,
+.ne-modal .ne-subhead,.ne-modal .ne-muted{font-family:inherit}
+
+/* ── aviso flutuante ── */
+.ne-toast{position:fixed;bottom:22px;right:22px;z-index:100020;background:#192941;color:#fff;border-radius:10px;
+  box-shadow:0 12px 40px #24345130;display:flex;align-items:center;gap:12px;max-width:min(540px,calc(100vw - 34px));
+  padding:13px 16px;font-size:12.5px;font-family:'DM Sans',system-ui,sans-serif;line-height:1.5}
+.ne-toast>span{color:#5dd4a2;font-size:15px;flex-shrink:0}
+.ne-toast-erro{background:#702e42}
+.ne-toast-erro>span{color:#ffb1b1}
+
+/* ── telas estreitas ── */
+@media(max-width:1400px){.ne-dash-grid{grid-template-columns:minmax(0,1fr)}.ne-stats{gap:11px}.ne-stat{padding:15px}}
+@media(max-width:1080px){.ne-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.ne-blocks-grid,.ne-inv-cards,.ne-settings-grid{grid-template-columns:1fr}}
+@media(max-width:760px){
+  .ne-shell{flex-direction:column}
+  .ne-side{width:100%;flex:0 0 auto;position:static;flex-direction:row;align-items:center;overflow-x:auto;padding:0 8px}
+  .ne-brand{height:58px;padding:0 10px;border-bottom:0;flex-shrink:0}
+  .ne-brand span,.ne-nav-label,.ne-side-bottom{display:none}
+  .ne-side nav{display:flex;gap:4px;padding:0 6px}
+  .ne-nav-item{height:36px;white-space:nowrap}
+  .ne-top{height:54px;padding:0 14px}.ne-top-acoes{display:none}
+  .ne-content{padding:18px 13px 50px}
+  .ne-head h1{font-size:22px}
+  .ne-stats{grid-template-columns:1fr 1fr;gap:9px}.ne-stat{padding:13px}.ne-stat strong{font-size:20px}
+  .ne-panel{padding:15px 12px}
+  .ne-form-grid{grid-template-columns:1fr}.ne-span2{grid-column:span 1}
+  .ne-backdrop{padding:8px}.ne-modal{max-height:calc(100vh - 16px)}.ne-modal-top,.ne-modal-body{padding:16px}
+}
+
+/* ── acrescentado no alinhamento com o projeto original ── */
+.ne-funil{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+.ne-funil-i{display:flex;align-items:center;gap:7px;background:#fff;border:1px solid #e8edf4;border-radius:10px;padding:8px 12px;transition:border-color .12s}
+.ne-funil-i:hover{border-color:#cad9ff;background:#f8faff}
+.ne-funil-i b{font-size:14px;color:#27354e}
+.ne-funil-vl{margin-left:auto;font-size:11px;color:#8794a7}
+.ne-funil-vl b{font-size:14px;color:#274eb5;margin-left:5px}
+.ne-inv-ready{border-color:#dce8f8;background:linear-gradient(180deg,#f8fbff,#fff)}
+.ne-ready-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.ne-ready-card{border:1px solid #dce6f4;border-left:4px solid #6f8ad4;border-radius:10px;padding:13px;background:#fff}
+.ne-ready-card.ne-block-cnc{border-left-color:#5285e0}
+.ne-ready-card.ne-block-3d{border-left-color:#2ca572}
+.ne-ready-card>strong{display:block;font-size:12px;color:#2d3a52;margin-bottom:4px}
+.ne-ro{padding:10px 12px;border:1px solid #e5eaf2;border-radius:8px;background:#f8faff;font-weight:800;font-size:14px;color:#27354e}
+
+</style>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   MÓDULO "NOTAS E ENTREGAS"  —  controle de materiais SAP → bloco → NF
+
+   Reconstrução do NotaFlow (React + Supabase) dentro do app da Torre:
+   mesmas regras de negócio, mesmas telas, mas em JavaScript puro e
+   gravando no Firebase que o resto do app já usa.
+
+   O caminho de um material é sempre o mesmo:
+
+     A pedir  →  Pedido (solicitado no SAP)  →  Nota recebida  →  Concluído
+     ─────────    ──────────────────────────     ─────────────    ─────────
+     cadastro     o bloco inteiro é pedido        vem da NF        manual
+
+   Duas regras mandam em tudo:
+   • cada material tem o SEU status — mexer num bloco não mexe em material
+     de outro bloco, mesmo que dividam o mesmo SAP ou Forms;
+   • "Nota recebida" só aparece por causa de uma nota fiscal vinculada;
+     ninguém marca na mão, e desvincular devolve o status anterior.
+   ═══════════════════════════════════════════════════════════════════════ */
+window.MNE = (function () {
+  'use strict';
+
+  // ── chaves de armazenamento (espelhadas no Firebase pelo FB_KEY_MAP) ──
+  const K = {
+    mat:  'cnc_ne_materiais_v1',
+    blk:  'cnc_ne_blocos_v1',
+    nf:   'cnc_ne_notas_v1',
+    lnk:  'cnc_ne_vinculos_v1',
+    site: 'cnc_ne_sites_v1',
+    log:  'cnc_ne_hist_v1'
+  };
+
+  const POR_PAG = 25;
+
+  // ── status do material ──
+  const STATUSES = ['rascunho', 'solicitado', 'nota_recebida', 'concluido', 'cancelado'];
+  const ST_NOME = {
+    rascunho: 'A pedir', solicitado: 'Pedido', nota_recebida: 'Nota recebida',
+    concluido: 'Concluído', cancelado: 'Cancelado'
+  };
+  const ST_COR = {
+    rascunho:      ['#f0f3f8', '#68758d'],
+    solicitado:    ['#fff7e8', '#c08323'],
+    nota_recebida: ['#edf3ff', '#406cdd'],
+    concluido:     ['#eaf8f1', '#298f68'],
+    cancelado:     ['#fff0f2', '#c2505b']
+  };
+
+  // ── processo ──
+  const PROCESSES = ['cnc', '3d', 'outro', 'indefinido'];
+  const PR_NOME = { cnc: 'CNC', '3d': 'Impressão 3D', outro: 'Outro', indefinido: 'Não definido' };
+  const PR_COR = {
+    cnc:        ['#dfeaff', '#164fae', '#b9d2ff'],
+    '3d':       ['#d8f6e7', '#116e42', '#abe6c8'],
+    outro:      ['#ebedf3', '#53647e', '#dce1e9'],
+    indefinido: ['#ebedf3', '#53647e', '#dce1e9']
+  };
+
+  /* As oito fábricas que a Torre atende, já com o centro do SAP — servem de
+     semente dos sites, então ninguém precisa cadastrar na mão. */
+  const PLANTAS = [
+    ['Aguaí', '3249', 'Sudeste'], ['Garanhuns', '5029', 'Nordeste'],
+    ['Igarassu', '3181', 'Nordeste'], ['Indaiatuba', '3164', 'Sudeste'],
+    ['Pouso Alegre', '5038', 'Sudeste'], ['Suape', '3165', 'Nordeste'],
+    ['Valinhos', '3178', 'Sudeste'], ['Vinhedo', '3166', 'Sudeste']
+  ];
+
+  const ORDENS = [
+    ['recent', 'Mais recentes'], ['oldest', 'Mais antigos'],
+    ['date_desc', 'Data (recente)'], ['date_asc', 'Data (antiga)'],
+    ['sap', 'Código SAP'], ['forms', 'Forms'], ['description', 'Descrição'],
+    ['value_desc', 'Maior valor'], ['value_asc', 'Menor valor'],
+    ['status', 'Status'],
+    ['quantity_desc', 'Maior quantidade'], ['quantity_asc', 'Menor quantidade'],
+    ['unit_desc', 'Maior preço unitário'], ['unit_asc', 'Menor preço unitário'],
+    ['site', 'Site / fábrica'], ['process', 'Processo']
+  ];
+
+  /* ─────────────────────────── utilidades ─────────────────────────── */
+
+  const esc = v => String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  const hoje = () => new Date().toLocaleDateString('en-CA');          // YYYY-MM-DD
+  const agora = () => new Date().toISOString();
+  const uid = () => (globalThis.crypto && crypto.randomUUID)
+    ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+
+  const dinheiro = v => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const dataBr = v => v ? String(v).slice(0, 10).split('-').reverse().join('/') : '—';
+  const totalItem = m => Number(m.quantity || 0) * Number(m.unit_price || 0);
+  const chaveBusca = v => String(v == null ? '' : v).normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+
+  const num = v => {
+    const t = String(v == null ? '' : v).trim();
+    if (!t) return 0;
+    // 1.234,56 (brasileiro) vs 1234.56
+    const n = t.indexOf(',') >= 0 ? Number(t.replace(/\./g, '').replace(',', '.')) : Number(t);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  /* ───────────────────────── armazenamento ───────────────────────── */
+
+  const _ler = k => { try { const v = JSON.parse(localStorage.getItem(k)); return Array.isArray(v) ? v : null; } catch (e) { return null; } };
+  const _grv = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn('[NE] gravar', k, e); } };
+
+  let sites = [], blocos = [], mats = [], notas = [], vincs = [], hist = [];
+
+  function carregar() {
+    sites  = _ler(K.site) || PLANTAS.map((p, i) => ({ id: 'site-' + i, name: p[0], center_code: p[1], region: p[2], carrier_info: '', created_at: agora() }));
+    blocos = _ler(K.blk) || [];
+    mats   = _ler(K.mat) || [];
+    notas  = _ler(K.nf)  || [];
+    vincs  = _ler(K.lnk) || [];
+    hist   = _ler(K.log) || [];
+  }
+
+  const gravaSites = () => _grv(K.site, sites);
+  const gravaBlocos = () => _grv(K.blk, blocos);
+  const gravaMats = () => _grv(K.mat, mats);
+  const gravaNotas = () => { _grv(K.nf, notas); _grv(K.lnk, vincs); };
+  const gravaHist = () => _grv(K.log, hist);
+
+  /* O histórico é escrito pelo próprio app (no Supabase eram triggers).
+     Fica limitado às últimas 1.000 linhas para não estourar o navegador. */
+  function logar(entidade, entidadeId, acao, resumo) {
+    hist.unshift({
+      id: uid(), entity: entidade, entity_id: entidadeId, action: acao,
+      summary: String(resumo || '').slice(0, 240),
+      author: (window.CURRENT_USER && window.CURRENT_USER.email) || '',
+      happened_at: agora()
+    });
+    if (hist.length > 1000) hist.length = 1000;
+    gravaHist();
+  }
+
+  const refMat = m => ['sap_code', 'forms_code']
+    .map(k => (m && m[k]) ? ((k === 'sap_code' ? 'SAP ' : 'Forms ') + m[k]) : '')
+    .filter(Boolean).join(' · ') || 'Material';
+
+  function detalhaMudanca(antes, depois) {
+    const campos = {
+      status: 'status', quantity: 'qtd', unit_price: 'unitário', process: 'processo',
+      block_id: 'bloco', site_id: 'site', sap_code: 'SAP', forms_code: 'Forms',
+      description: 'descrição', requested_on: 'data', notes: 'observações'
+    };
+    return Object.keys(campos).filter(k => String(antes && antes[k] != null ? antes[k] : '') !== String(depois && depois[k] != null ? depois[k] : ''))
+      .map(k => ['status', 'quantity', 'unit_price', 'process'].indexOf(k) >= 0
+        ? campos[k] + ' ' + ((antes && antes[k]) || '—') + ' → ' + ((depois && depois[k]) || '—')
+        : campos[k] + ' alterado(a)')
+      .join('; ');
+  }
+
+  /* ─────────────────── consultas sobre os dados ─────────────────── */
+
+  const siteDe = id => sites.find(s => s.id === id);
+  const blocoDe = id => blocos.find(b => b.id === id);
+  const matDe = id => mats.find(m => m.id === id);
+  const vincDe = matId => vincs.find(v => v.material_id === matId);
+  const notaDe = id => notas.find(n => n.id === id);
+  const matsDoBloco = id => mats.filter(m => m.block_id === id)
+    .sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0));
+  const matsDaNota = id => vincs.filter(v => v.invoice_id === id).map(v => matDe(v.material_id)).filter(Boolean);
+  const valorDaNota = id => matsDaNota(id).reduce((a, m) => a + totalItem(m), 0);
+
+  /* Uma linha da lista já com os nomes resolvidos — o equivalente ao
+     mergeView() da versão React. */
+  function visao(m) {
+    const v = vincDe(m.id), n = v && notaDe(v.invoice_id);
+    return Object.assign({}, m, {
+      invoice_id: v ? v.invoice_id : null,
+      invoice_number: n ? n.number : '',
+      site_name: (siteDe(m.site_id) || {}).name || '',
+      block_name: (blocoDe(m.block_id) || {}).name || ''
+    });
+  }
+  const todas = () => mats.map(visao);
+
+  /* ──────────────────────────── filtros ──────────────────────────── */
+
+  function casa(m, f) {
+    const q = chaveBusca(f.search);
+    if (q && ![m.sap_code, m.forms_code, m.description, m.notes, m.site_name, m.block_name, m.invoice_number]
+      .some(v => chaveBusca(v).indexOf(q) >= 0)) return false;
+    if (f.status && m.status !== f.status) return false;
+    if (f.process && m.process !== f.process) return false;
+    if (f.site_id && m.site_id !== f.site_id) return false;
+    if (f.from && m.requested_on < f.from) return false;
+    if (f.to && m.requested_on > f.to) return false;
+    if (f.min_value !== '' && f.min_value != null && totalItem(m) < Number(f.min_value)) return false;
+    if (f.max_value !== '' && f.max_value != null && totalItem(m) > Number(f.max_value)) return false;
+    if (f.invoice === 'with' && !m.invoice_id) return false;
+    if (f.invoice === 'without' && m.invoice_id) return false;
+    return true;
+  }
+
+  function ordenar(linhas, ordem) {
+    const cmp = (x, y) => String(x == null ? '' : x).localeCompare(String(y == null ? '' : y), 'pt-BR', { numeric: true, sensitivity: 'base' });
+    return linhas.slice().sort((a, b) => {
+      switch (ordem) {
+        case 'oldest':        return cmp(a.created_at, b.created_at);
+        case 'date_asc':      return cmp(a.requested_on, b.requested_on) || cmp(a.id, b.id);
+        case 'date_desc':     return cmp(b.requested_on, a.requested_on) || cmp(b.created_at, a.created_at);
+        case 'sap':           return cmp(a.sap_code, b.sap_code) || cmp(a.created_at, b.created_at);
+        case 'forms':         return cmp(a.forms_code, b.forms_code) || cmp(a.created_at, b.created_at);
+        case 'description':   return cmp(a.description, b.description);
+        case 'value_asc':     return totalItem(a) - totalItem(b);
+        case 'value_desc':    return totalItem(b) - totalItem(a);
+        case 'status':        return cmp(a.status, b.status);
+        case 'quantity_desc': return Number(b.quantity || 0) - Number(a.quantity || 0);
+        case 'quantity_asc':  return Number(a.quantity || 0) - Number(b.quantity || 0);
+        case 'unit_desc':     return Number(b.unit_price || 0) - Number(a.unit_price || 0);
+        case 'unit_asc':      return Number(a.unit_price || 0) - Number(b.unit_price || 0);
+        case 'site':          return cmp(a.site_name, b.site_name);
+        case 'process':       return cmp(PR_NOME[a.process], PR_NOME[b.process]);
+        default:              return cmp(b.created_at, a.created_at) || cmp(b.id, a.id);
+      }
+    });
+  }
+
+  /* ════════════════════ REGRAS DE NEGÓCIO ════════════════════ */
+
+  /* Gravar um material. As travas existem porque o material pode estar
+     preso a uma nota fiscal — e nota fiscal é documento, não rascunho. */
+  function salvaMaterial(linha) {
+    const row = Object.assign({}, linha);
+    const original = row.id ? matDe(row.id) : null;
+    const temNota = original && !!vincDe(original.id);
+
+    if (row.status === 'nota_recebida' && !temNota)
+      throw new Error('Nota recebida só pode ser definida pelo vínculo com uma NF.');
+
+    if (original && temNota &&
+        ['sap_code', 'forms_code', 'description', 'quantity', 'unit_price', 'site_id', 'requested_on']
+          .some(k => row[k] !== undefined && String(row[k]) !== String(original[k])))
+      throw new Error('Desvincule a nota fiscal antes de alterar os dados fiscais do material.');
+
+    if (original) {
+      const antes = Object.assign({}, original);
+      Object.assign(original, row, { updated_at: agora() });
+      logar('materials', original.id, antes.status !== original.status ? 'status' : 'update',
+            refMat(original) + ' · ' + detalhaMudanca(antes, original));
+      gravaMats();
+      return original;
+    }
+    const novo = Object.assign({
+      id: uid(), created_at: agora(), status: 'rascunho', process: 'indefinido',
+      quantity: 1, unit_price: 0, requested_on: hoje(), block_id: null, notes: ''
+    }, row);
+    mats.unshift(novo);
+    logar('materials', novo.id, 'insert', refMat(novo));
+    if (!novo.block_id) agrupaSoltos();
+    gravaMats();
+    return novo;
+  }
+
+  function excluiMaterial(id) {
+    if (vincDe(id)) throw new Error('Remova a nota fiscal antes de excluir o material.');
+    const m = matDe(id);
+    mats = mats.filter(x => x.id !== id);
+    logar('materials', id, 'delete', refMat(m));
+    gravaMats();
+  }
+
+  /* Trocar o status de vários materiais de uma vez (a ação do bloco). */
+  function defineStatus(ids, status) {
+    if (!ids.length) return;
+    const alvo = mats.filter(m => ids.indexOf(m.id) >= 0);
+    alvo.forEach(m => {
+      const comNota = !!vincDe(m.id);
+      if (comNota && ['nota_recebida', 'concluido'].indexOf(status) < 0)
+        throw new Error('Material possui nota fiscal. Desvincule a nota primeiro.');
+      if (status === 'nota_recebida' && !comNota)
+        throw new Error('Somente vincular uma nota fiscal pode definir Nota recebida.');
+    });
+    alvo.forEach(m => {
+      m.status = status; m.updated_at = agora();
+      logar('materials', m.id, 'status', refMat(m) + ' · status alterado para ' + ST_NOME[status]);
+    });
+    gravaMats();
+  }
+
+  /* ── blocos ──
+     Agrupa o que ainda não tem bloco, de 4 em 4, separando por site e por
+     processo. Blocos criados à mão não são tocados. */
+  function agrupaSoltos() {
+    const ordemProc = ['cnc', '3d', 'outro', 'indefinido'];
+    const pendentes = mats.filter(m => !m.block_id).sort((a, b) =>
+      String(a.site_id || '').localeCompare(String(b.site_id || '')) ||
+      (ordemProc.indexOf(a.process) - ordemProc.indexOf(b.process)) ||
+      String(a.created_at || '').localeCompare(String(b.created_at || '')) ||
+      String(a.id).localeCompare(String(b.id)));
+    let n = 0;
+    pendentes.forEach(m => {
+      const site = m.site_id || null, proc = m.process || 'indefinido';
+      let bl = blocos.filter(b => b.auto_created && b.site_id === site && b.process === proc &&
+                                  mats.filter(x => x.block_id === b.id).length < 4)
+                     .sort((a, b) => a.position - b.position)[0];
+      if (!bl) {
+        const pos = Math.max.apply(null, [-1].concat(blocos.map(b => Number(b.position) || 0))) + 1;
+        bl = {
+          id: uid(), name: 'BLOCO ' + String(pos + 1).padStart(3, '0') + ' — ' + PR_NOME[proc],
+          position: pos, process: proc, site_id: site, auto_created: true, created_at: agora()
+        };
+        blocos.push(bl);
+        logar('blocks', bl.id, 'insert', bl.name);
+      }
+      m.block_id = bl.id;
+      m.position = Math.max.apply(null, [-1].concat(
+        mats.filter(x => x.block_id === bl.id && x.id !== m.id).map(x => Number(x.position) || 0))) + 1;
+      n++;
+    });
+    gravaBlocos(); gravaMats();
+    return n;
+  }
+
+  function moveMateriais(ids, blocoId) {
+    if (!ids.length) return;
+    if (blocoId) {
+      const jaTem = mats.filter(m => m.block_id === blocoId && ids.indexOf(m.id) < 0).length;
+      if (jaTem + new Set(ids).size > 4) throw new Error('O bloco aceita no máximo 4 materiais.');
+    }
+    mats.forEach(m => { if (ids.indexOf(m.id) >= 0) m.block_id = blocoId || null; });
+    gravaMats();
+  }
+
+  function salvaBloco(linha) {
+    const existente = linha.id ? blocoDe(linha.id) : null;
+    if (existente) {
+      Object.assign(existente, linha, { updated_at: agora() });
+      logar('blocks', existente.id, 'update', existente.name);
+    } else {
+      const pos = Math.max.apply(null, [-1].concat(blocos.map(b => Number(b.position) || 0))) + 1;
+      const novo = Object.assign({ id: uid(), position: pos, auto_created: false, created_at: agora(), process: 'indefinido', site_id: null }, linha);
+      blocos.push(novo);
+      logar('blocks', novo.id, 'insert', novo.name);
+    }
+    gravaBlocos();
+  }
+
+  function excluiBloco(id) {
+    mats.forEach(m => { if (m.block_id === id) m.block_id = null; });
+    const b = blocoDe(id);
+    blocos = blocos.filter(x => x.id !== id);
+    logar('blocks', id, 'delete', (b && b.name) || '');
+    gravaBlocos(); gravaMats();
+  }
+
+  /* ── notas fiscais ──
+     De 1 a 4 materiais, cada um já pedido no SAP e sem outra nota. */
+  function validaSelecao(ids, notaAtualId) {
+    const unicos = [...new Set(ids)];
+    if (!unicos.length || unicos.length > 4) throw new Error('Selecione de 1 a 4 materiais por nota fiscal.');
+    unicos.forEach(k => {
+      const m = matDe(k);
+      if (!m) throw new Error('Material não encontrado.');
+      const v = vincDe(k);
+      if (m.status !== 'solicitado' && !(notaAtualId && v && v.invoice_id === notaAtualId))
+        throw new Error('Solicite o material no SAP (status Pedido) antes de vincular a nota fiscal.');
+      if (v && v.invoice_id !== notaAtualId) throw new Error('Este material já está vinculado a outra nota.');
+    });
+    return unicos;
+  }
+
+  function salvaNota(nota, ids) {
+    const existente = nota.id ? notaDe(nota.id) : null;
+    if (nota.id && !existente) throw new Error('Nota fiscal não encontrada.');
+    if (!String(nota.number || '').trim()) throw new Error('Informe o número da nota.');
+    if (nota.access_key && !/^\d{44}$/.test(nota.access_key)) throw new Error('Chave NF-e inválida: digite 44 números.');
+
+    const unicos = validaSelecao(ids, existente ? existente.id : null);
+
+    // quem saiu da nota volta ao status que tinha antes
+    vincs.filter(v => existente && v.invoice_id === existente.id && unicos.indexOf(v.material_id) < 0)
+      .forEach(v => {
+        const m = matDe(v.material_id);
+        if (m) { m.status = v.prior_status || 'solicitado'; m.prior_status = null; }
+      });
+    vincs = vincs.filter(v => !existente || v.invoice_id !== existente.id || unicos.indexOf(v.material_id) >= 0);
+
+    const row = Object.assign({}, nota, {
+      id: (existente && existente.id) || uid(),
+      created_at: (existente && existente.created_at) || agora(),
+      updated_at: agora()
+    });
+    if (existente) Object.assign(existente, row); else notas.unshift(row);
+
+    unicos.forEach(mid => {
+      if (vincs.some(v => v.invoice_id === row.id && v.material_id === mid)) return;
+      const m = matDe(mid), anterior = m.status;
+      m.prior_status = anterior;
+      m.status = 'nota_recebida';
+      vincs.push({ invoice_id: row.id, material_id: mid, prior_status: anterior, added_at: agora() });
+    });
+
+    logar('invoices', row.id, existente ? 'update' : 'insert', 'NF ' + row.number);
+    gravaNotas(); gravaMats();
+    return row.id;
+  }
+
+  /* Excluir a nota NÃO exclui os materiais: eles voltam ao status anterior. */
+  function excluiNota(id) {
+    const n = notaDe(id);
+    vincs.filter(v => v.invoice_id === id).forEach(v => {
+      const m = matDe(v.material_id);
+      if (m) { m.status = v.prior_status || 'solicitado'; m.prior_status = null; }
+    });
+    vincs = vincs.filter(v => v.invoice_id !== id);
+    notas = notas.filter(x => x.id !== id);
+    logar('invoices', id, 'delete', 'NF ' + ((n && n.number) || ''));
+    gravaNotas(); gravaMats();
+  }
+
+  /* ── importação colando do Excel ──
+     Sem cabeçalho: SAP | Forms | Descrição | Processo | Qtd | Valor unit. */
+  function leColagem(texto) {
+    return String(texto || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean).map((linha, i) => {
+      const c = linha.split('\t');
+      const sap = (c[0] || '').trim(), forms = (c[1] || '').trim();
+      if (!sap && !forms) throw new Error('Linha ' + (i + 1) + ': preencha SAP ou Forms.');
+      const proc = (c[3] || 'indefinido').trim().toLowerCase();
+      const qt = num(c[4] == null || c[4] === '' ? '1' : c[4]);
+      const vu = num(c[5] == null || c[5] === '' ? '0' : c[5]);
+      if (!(qt > 0) || !(vu >= 0)) throw new Error('Linha ' + (i + 1) + ': quantidade ou preço inválido.');
+      return {
+        sap_code: sap, forms_code: forms, description: (c[2] || '').trim(),
+        process: PROCESSES.indexOf(proc) >= 0 ? proc : 'indefinido',
+        quantity: qt, unit_price: vu
+      };
+    });
+  }
+
+  function paraCsv(linhas) {
+    const q = v => '"' + String(v == null ? '' : v).split('"').join('""') + '"';
+    const cab = ['Data', 'Site', 'SAP', 'Forms', 'Descrição', 'Processo', 'Quantidade',
+                 'Valor unitário', 'Total', 'Status', 'Bloco', 'Nota fiscal'];
+    const corpo = linhas.map(r => [r.requested_on, r.site_name || '', r.sap_code, r.forms_code,
+      r.description, PR_NOME[r.process], r.quantity, r.unit_price, totalItem(r),
+      ST_NOME[r.status], r.block_name || '', r.invoice_number || ''].map(q).join(';'));
+    return '﻿' + [cab.map(q).join(';')].concat(corpo).join('\r\n');
+  }
+
+  /* ════════════════════════════ INTERFACE ════════════════════════════ */
+
+  let raiz = null, tela = 'dashboard', pag = 1, ordem = 'recent';
+  let filtro = { search: '', status: '', process: '', site_id: '', from: '', to: '', invoice: '', min_value: '', max_value: '' };
+  let sel = [];                         // ids marcados em Lançamentos
+  let selBloco = null;                  // bloco aberto para mover itens
+  let modal = null;                     // {tipo, dados}
+  let buscaBloco = '', filtroBloco = '';
+  let rascunhoCol = '', previaCol = null;
+  let buscaLookup = '';
+
+  const TELAS = [
+    ['dashboard', 'Visão geral',        '▦'],
+    ['records',   'Lançamentos',        '▤'],
+    ['blocks',    'Blocos',             '▥'],
+    ['invoices',  'Notas fiscais',      '🧾'],
+    ['lookup',    'Consulta SAP / Forms', '🔍'],
+    ['activity',  'Histórico',          '🕘'],
+    ['settings',  'Configurações',      '⚙']
+  ];
+
+  const temFiltro = () => Object.keys(filtro).some(k => filtro[k] !== '');
+
+  /* ── peças de interface ── */
+  const badgeSt = s => {
+    const c = ST_COR[s] || ['#f1f4fa', '#6b768b'];
+    return '<span class="ne-status" style="background:' + c[0] + ';color:' + c[1] + '">'
+         + '<i style="width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block"></i>'
+         + esc(ST_NOME[s] || s) + '</span>';
+  };
+  const badgeProc = p => {
+    const c = PR_COR[p] || PR_COR.outro;
+    return '<span class="ne-proc" style="background:' + c[0] + ';color:' + c[1] + ';border-color:' + c[2] + '">'
+         + esc(PR_NOME[p] || p) + '</span>';
+  };
+  const statCard = (rotulo, valor, ico, rodape, destaque) =>
+    '<div class="ne-stat' + (destaque ? ' ne-stat-accent' : '') + '">'
+    + '<div class="ne-stat-top"><span>' + esc(rotulo) + '</span><span class="ne-stat-ico">' + ico + '</span></div>'
+    + '<strong>' + valor + '</strong>'
+    + (rodape ? '<small>' + esc(rodape) + '</small>' : '') + '</div>';
+  const vazio = (titulo, sub) =>
+    '<div class="ne-empty"><div class="ne-empty-ico">📭</div><strong>' + esc(titulo) + '</strong><span>' + esc(sub || '') + '</span></div>';
+  const selOpts = (opts, atual, rotuloVazio) =>
+    '<option value="">' + esc(rotuloVazio || 'Todos') + '</option>'
+    + opts.map(o => '<option value="' + esc(o[0]) + '"' + (String(o[0]) === String(atual) ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('');
+
+  function toastNE(msg, erro) {
+    const velho = document.getElementById('neToast');
+    if (velho) velho.remove();
+    const d = document.createElement('div');
+    d.id = 'neToast';
+    d.className = 'ne-toast' + (erro ? ' ne-toast-erro' : '');
+    d.innerHTML = '<span>' + (erro ? '⚠' : '✓') + '</span><div>' + esc(msg) + '</div>';
+    document.body.appendChild(d);
+    setTimeout(() => { if (d.parentNode) d.remove(); }, erro ? 6000 : 3500);
+  }
+  const tentar = fn => { try { fn(); } catch (e) { toastNE(e.message || String(e), true); } };
+
+  /* ──────────────────────────── montagem ──────────────────────────── */
+
+  function mount(el) { raiz = el; carregar(); render(); }
+
+  function render() {
+    if (!raiz) return;
+    const titulo = (TELAS.find(t => t[0] === tela) || TELAS[0])[1];
+    raiz.innerHTML =
+      '<div class="ne-shell">'
+      + '<aside class="ne-side">'
+      +   '<div class="ne-brand"><div class="ne-brand-mark">NF</div>'
+      +     '<div><strong>Notas e Entregas</strong><span>CONTROLE SAP</span></div></div>'
+      +   '<div class="ne-nav-label">ESPAÇO DE TRABALHO</div><nav>'
+      +     TELAS.map(t => '<button class="ne-nav-item' + (tela === t[0] ? ' ativo' : '') + '" onclick="MNE.ir(\'' + t[0] + '\')">'
+      +       '<span class="ne-nav-ico">' + t[2] + '</span><span>' + esc(t[1]) + '</span></button>').join('')
+      +   '</nav>'
+      +   '<div class="ne-side-bottom"><div class="ne-cloud"><i class="ne-dot"></i><span id="neCloud">nuvem</span></div></div>'
+      + '</aside>'
+      + '<div class="ne-main">'
+      +   '<div class="ne-top"><div class="ne-crumb">Notas e Entregas <b>›</b> <strong>' + esc(titulo) + '</strong></div>'
+      +     '<div class="ne-top-acoes"><span>' + dataBr(hoje()) + '</span></div></div>'
+      +   '<div class="ne-content" id="neContent"></div>'
+      + '</div></div>'
+      + '<div id="neModal"></div>';
+    document.getElementById('neContent').innerHTML =
+      tela === 'dashboard' ? viewDash()
+      : tela === 'records' ? viewRecords()
+      : tela === 'blocks'  ? viewBlocks()
+      : tela === 'invoices' ? viewInvoices()
+      : tela === 'lookup'  ? viewLookup()
+      : tela === 'activity' ? viewActivity()
+      : viewSettings();
+    if (modal) renderModal();
+    const c = document.getElementById('neCloud');
+    if (c) {
+      const on = (typeof FB !== 'undefined' && FB.isConnected && FB.isConnected());
+      c.textContent = on ? 'sincronizado com a nuvem' : 'somente neste navegador';
+      c.parentNode.querySelector('.ne-dot').style.background = on ? '#46d6ac' : '#f0a132';
+    }
+  }
+
+  function ir(t) { tela = t; pag = 1; sel = []; render(); }
+
+  const cabecalho = (eyebrow, h1, p, acoes) =>
+    '<div class="ne-head"><div><span class="ne-eyebrow">' + esc(eyebrow) + '</span>'
+    + '<h1>' + esc(h1) + '</h1><p>' + esc(p) + '</p></div>'
+    + '<div class="ne-head-acoes">' + (acoes || '') + '</div></div>';
+
+  const passos =
+    '<div class="ne-workflow">1. <b>Cadastre</b> o material &nbsp;→&nbsp; 2. o app monta o <b>bloco de até 4</b> '
+    + '&nbsp;→&nbsp; 3. <b>peça no SAP</b> e marque o bloco como Pedido &nbsp;→&nbsp; 4. chegou a <b>nota fiscal</b>, '
+    + 'registre e vincule &nbsp;→&nbsp; 5. marque <b>Concluído</b> quando entregar.</div>';
+
+  /* ───────────────────────── 1. VISÃO GERAL ───────────────────────── */
+
+  function viewDash() {
+    const linhas = todas();
+    const cnt = s => linhas.filter(m => m.status === s).length;
+    const aberto = linhas.filter(m => ['rascunho', 'solicitado', 'nota_recebida'].indexOf(m.status) >= 0);
+    const valorAberto = aberto.reduce((a, m) => a + totalItem(m), 0);
+    const ultimos = ordenar(linhas, 'recent').slice(0, 8);
+
+    const valorTotal = linhas.reduce((a, m) => a + totalItem(m), 0);
+    let h = cabecalho('PAINEL DE CONTROLE', 'Visão geral',
+      'Acompanhe pedidos, materiais e notas fiscais em um único lugar.',
+      '<button class="ne-btn" onclick="MNE.novoMaterial()">＋ Novo lançamento</button>');
+    h += passos;
+    h += '<div class="ne-stats">'
+      + statCard('Materiais cadastrados', linhas.length, '📦', 'Todos os registros')
+      + statCard('Em andamento', cnt('rascunho') + cnt('solicitado'), '🔄', 'A pedir e pedido')
+      + statCard('Notas registradas', notas.length, '🧾', 'Documentos fiscais')
+      + statCard('Valor dos materiais', dinheiro(valorTotal), '💰', 'Quantidade × valor unitário', true)
+      + '</div>';
+    /* Tira fina com o funil inteiro — é o que a Torre olha primeiro. */
+    h += '<div class="ne-funil">'
+      + STATUSES.map(st => '<button onclick="MNE.filtraPor(\'' + st + '\')" class="ne-funil-i">'
+          + badgeSt(st) + '<b>' + cnt(st) + '</b></button>').join('')
+      + '<span class="ne-funil-vl">em aberto <b>' + dinheiro(valorAberto) + '</b></span>'
+      + '</div>';
+
+    h += '<div class="ne-dash-grid">';
+    h += '<div class="ne-panel"><div class="ne-subhead"><div><h2>Últimos lançamentos</h2>'
+       + '<p>Registros mais recentes. Consulte e edite na planilha.</p></div>'
+       + '<button class="ne-btn ne-btn-sec ne-btn-sm" onclick="MNE.ir(\'records\')">Ver todos →</button></div>';
+    h += ultimos.length ? tabelaMateriais(ultimos, false) : vazio('Nenhum lançamento ainda', 'Cadastre o primeiro material para começar.');
+    h += '</div>';
+
+    h += '<div class="ne-panel ne-quick"><div class="ne-subhead"><div><h2>Atalhos</h2><p>o que mais se faz por aqui</p></div></div>'
+      + '<div class="ne-quick-list">'
+      + atalho('▤', 'Lançamentos', 'Filtrar e atualizar materiais', "MNE.ir('records')")
+      + atalho('▥', 'Blocos', 'Organizar por grupos e processos', "MNE.ir('blocks')")
+      + atalho('🧾', 'Notas fiscais', 'Vincular até quatro materiais', "MNE.ir('invoices')")
+      + atalho('🔍', 'Consulta SAP / Forms', 'Localizar códigos rapidamente', "MNE.ir('lookup')")
+      + atalho('📋', 'Colar do Excel', 'Importar vários de uma vez', "MNE.abrirColagem()")
+      + '</div></div>';
+    h += '</div>';
+    return h;
+  }
+  const atalho = (ico, t, s, fn) =>
+    '<button class="ne-quick-item" onclick="' + fn + '"><span class="ne-quick-ico">' + ico + '</span>'
+    + '<span><strong>' + esc(t) + '</strong><small>' + esc(s) + '</small></span><span>→</span></button>';
+
+  /* ──────────────────────── 2. LANÇAMENTOS ──────────────────────── */
+
+  function filtradas() { return ordenar(todas().filter(m => casa(m, filtro)), ordem); }
+
+  function viewRecords() {
+    const lst = filtradas();
+    const totPag = Math.max(1, Math.ceil(lst.length / POR_PAG));
+    if (pag > totPag) pag = totPag;
+    const fatia = lst.slice((pag - 1) * POR_PAG, pag * POR_PAG);
+    const soma = lst.reduce((a, m) => a + totalItem(m), 0);
+
+    let h = cabecalho('GESTÃO DE MATERIAIS', 'Lançamentos',
+      'Planilha de materiais com buscas, filtros, ordenação e atualização individual de status.',
+      '<button class="ne-btn ne-btn-sec" onclick="MNE.abrirColagem()">⬆ Colar do Excel</button>'
+      + '<button class="ne-btn ne-btn-sec" onclick="MNE.exportar()">⬇ Exportar CSV</button>'
+      + '<button class="ne-btn" onclick="MNE.novoMaterial()">＋ Novo material</button>');
+    h += '<div class="ne-panel" style="padding:0;border:0;box-shadow:none;margin-bottom:10px">'
+      + '<div class="ne-subhead"><div><h2>Planilha de lançamentos</h2><p>'
+      + lst.length + ' material(is) encontrado(s) · ' + dinheiro(soma) + '</p></div></div></div>';
+
+    h += '<div class="ne-panel">' + barraFiltros();
+
+    if (sel.length) {
+      h += '<div class="ne-bulk"><strong>' + sel.length + ' selecionado(s)</strong>'
+        + '<select id="neBulkSt">' + STATUSES.filter(s => s !== 'nota_recebida')
+            .map(s => '<option value="' + s + '"' + (s === 'solicitado' ? ' selected' : '') + '>' + esc(ST_NOME[s]) + '</option>').join('') + '</select>'
+        + '<button class="ne-btn ne-btn-sm" onclick="MNE.statusSelecionados()">Alterar status</button>'
+        + '<select id="neBulkBloco"><option value="">— sem bloco —</option>'
+        + blocos.map(b => '<option value="' + esc(b.id) + '">' + esc(b.name) + '</option>').join('') + '</select>'
+        + '<button class="ne-btn ne-btn-sm ne-btn-sec" onclick="MNE.moverSelecionados()">Mover para o bloco</button>'
+        + '<button class="ne-btn ne-btn-sm ne-btn-danger" onclick="MNE.excluirSelecionados()">🗑 Excluir selecionados</button>'
+        + '<button class="ne-link" onclick="MNE.limpaSel()">Desmarcar</button></div>';
+    }
+
+    h += '<div class="ne-sort"><span>Ordenar por</span><select onchange="MNE.setOrdem(this.value)">'
+      + ORDENS.map(o => '<option value="' + o[0] + '"' + (o[0] === ordem ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('')
+      + '</select></div>';
+
+    h += lst.length ? tabelaMateriais(fatia, true) + paginacao(lst.length, totPag)
+                    : vazio('Nenhum material com esses filtros', 'Limpe os filtros ou cadastre um novo lançamento.');
+    h += '</div>';
+    return h;
+  }
+
+  function barraFiltros() {
+    return '<div class="ne-filters">'
+      + '<div class="ne-search"><span>🔎</span><input placeholder="Buscar por SAP, Forms, descrição, bloco, nota..." value="' + esc(filtro.search) + '" oninput="MNE.setFiltro(\'search\',this.value)"></div>'
+      + '<select onchange="MNE.setFiltro(\'status\',this.value)">' + selOpts(STATUSES.map(s => [s, ST_NOME[s]]), filtro.status, 'Todos os status') + '</select>'
+      + '<select onchange="MNE.setFiltro(\'process\',this.value)">' + selOpts(PROCESSES.map(p => [p, PR_NOME[p]]), filtro.process, 'Todos os processos') + '</select>'
+      + '<select onchange="MNE.setFiltro(\'site_id\',this.value)">' + selOpts(sites.map(s => [s.id, s.name]), filtro.site_id, 'Todos os sites') + '</select>'
+      + '<select onchange="MNE.setFiltro(\'invoice\',this.value)">' + selOpts([['with', 'Com nota fiscal'], ['without', 'Sem nota fiscal']], filtro.invoice, 'Com e sem nota') + '</select>'
+      + '</div>'
+      + '<div class="ne-filters-extra">'
+      + '<label>De<input type="date" value="' + esc(filtro.from) + '" onchange="MNE.setFiltro(\'from\',this.value)"></label>'
+      + '<label>Até<input type="date" value="' + esc(filtro.to) + '" onchange="MNE.setFiltro(\'to\',this.value)"></label>'
+      + '<label>Valor mín.<input type="number" step="0.01" value="' + esc(filtro.min_value) + '" onchange="MNE.setFiltro(\'min_value\',this.value)"></label>'
+      + '<label>Valor máx.<input type="number" step="0.01" value="' + esc(filtro.max_value) + '" onchange="MNE.setFiltro(\'max_value\',this.value)"></label>'
+      + (temFiltro() ? '<button class="ne-link" onclick="MNE.limpaFiltros()">✕ limpar filtros</button>' : '')
+      + '</div>';
+  }
+
+  function tabelaMateriais(linhas, comAcoes) {
+    const ids = linhas.map(m => m.id);
+    const todosMarcados = comAcoes && ids.length && ids.every(i => sel.indexOf(i) >= 0);
+    return '<div class="ne-table-wrap"><table><thead><tr>'
+      + (comAcoes ? '<th class="ne-col-check"><input type="checkbox"' + (todosMarcados ? ' checked' : '') + ' onchange="MNE.marcarTodos(this.checked)"></th>' : '')
+      + ['Data', 'Códigos', 'Descrição', 'Processo', 'Site', 'Qtd', 'Unitário', 'Total', 'Status', 'Bloco', 'Nota'].map(c => '<th>' + c + '</th>').join('')
+      + (comAcoes ? '<th></th>' : '')
+      + '</tr></thead><tbody>'
+      + linhas.map(m => '<tr>'
+        + (comAcoes ? '<td><input type="checkbox"' + (sel.indexOf(m.id) >= 0 ? ' checked' : '') + ' onchange="MNE.marcar(\'' + m.id + '\',this.checked)"></td>' : '')
+        + '<td class="ne-nowrap">' + dataBr(m.requested_on) + '</td>'
+        + '<td class="ne-codes"><span>' + (esc(m.sap_code) || '—') + '</span><span>' + (esc(m.forms_code) || '—') + '</span></td>'
+        + '<td><span class="ne-matname" title="' + esc(m.description) + '">' + (esc(m.description) || '—') + '</span>'
+        +   (m.notes ? '<small class="ne-sub">' + esc(m.notes) + '</small>' : '') + '</td>'
+        + '<td>' + badgeProc(m.process) + '</td>'
+        + '<td>' + (esc(m.site_name) || '—') + '</td>'
+        + '<td class="ne-num">' + esc(m.quantity) + '</td>'
+        + '<td class="ne-num ne-nowrap">' + dinheiro(m.unit_price) + '</td>'
+        + '<td class="ne-num ne-nowrap ne-strong">' + dinheiro(totalItem(m)) + '</td>'
+        + '<td>' + badgeSt(m.status) + '</td>'
+        + '<td><span class="ne-pill">' + (esc(m.block_name) || '—') + '</span></td>'
+        + '<td>' + (m.invoice_number ? '<span class="ne-pill">' + esc(m.invoice_number) + '</span>' : '<span class="ne-muted">—</span>') + '</td>'
+        + (comAcoes ? '<td class="ne-nowrap"><button class="ne-ico" title="Editar" onclick="MNE.editarMaterial(\'' + m.id + '\')">✎</button>'
+            + '<button class="ne-ico ne-ico-danger" title="Excluir" onclick="MNE.excluirMaterial(\'' + m.id + '\')">🗑</button></td>' : '')
+        + '</tr>').join('')
+      + '</tbody></table></div>';
+  }
+
+  const paginacao = (total, totPag) =>
+    '<div class="ne-pag"><span>' + total + ' registro(s) · página ' + pag + ' de ' + totPag + '</span><div>'
+    + '<button class="ne-ico"' + (pag <= 1 ? ' disabled' : '') + ' onclick="MNE.pagina(' + (pag - 1) + ')">←</button>'
+    + '<button class="ne-ico"' + (pag >= totPag ? ' disabled' : '') + ' onclick="MNE.pagina(' + (pag + 1) + ')">→</button>'
+    + '</div></div>';
+
+  /* ────────────────────────── 3. BLOCOS ────────────────────────── */
+
+  function viewBlocks() {
+    const q = chaveBusca(buscaBloco);
+    let lst = blocos.slice().sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0));
+    if (filtroBloco) lst = lst.filter(b => b.process === filtroBloco);
+    if (q) lst = lst.filter(b => chaveBusca(b.name).indexOf(q) >= 0
+      || matsDoBloco(b.id).some(m => [m.sap_code, m.forms_code, m.description].some(v => chaveBusca(v).indexOf(q) >= 0)));
+    const soltos = mats.filter(m => !m.block_id).length;
+
+    let h = cabecalho('ORGANIZAÇÃO DE MATERIAIS', 'Blocos de trabalho',
+      'A pedir → Pedido no SAP → Nota recebida. Separação automática: CNC e impressão 3D, até quatro materiais por bloco.',
+      '<button class="ne-btn ne-btn-sec" onclick="MNE.agrupar()">▥ Organizar sem bloco' + (soltos ? ' (' + soltos + ')' : '') + '</button>'
+      + '<button class="ne-btn" onclick="MNE.novoBloco()">＋ Criar bloco</button>');
+    h += passos;
+    h += '<div class="ne-panel ne-block-toolbar">'
+      + '<div class="ne-search"><span>🔎</span><input placeholder="Buscar bloco, SAP, Forms ou descrição" value="' + esc(buscaBloco) + '" oninput="MNE.setBuscaBloco(this.value)"></div>'
+      + '<select onchange="MNE.setFiltroBloco(this.value)">' + selOpts(PROCESSES.map(p => [p, PR_NOME[p]]), filtroBloco, 'Todos os processos') + '</select>'
+      + '</div>';
+
+    if (!lst.length) return h + '<div class="ne-panel">' + vazio('Nenhum bloco', 'Cadastre materiais e use "Agrupar soltos", ou crie um bloco à mão.') + '</div>';
+
+    h += '<div class="ne-blocks-grid">' + lst.map(cardBloco).join('') + '</div>';
+    return h;
+  }
+
+  function cardBloco(b) {
+    const itens = matsDoBloco(b.id);
+    const cls = b.process === 'cnc' ? 'cnc' : b.process === '3d' ? '3d' : 'outro';
+    const n = s => itens.filter(m => m.status === s).length;
+    const valor = itens.reduce((a, m) => a + totalItem(m), 0);
+    const nRasc = n('rascunho');
+    const nSol = itens.filter(m => m.status === 'solicitado' && !vincDe(m.id)).length;
+
+    return '<div class="ne-panel ne-block ne-block-' + cls + '">'
+      + '<div class="ne-block-head"><div>'
+      +   '<div class="ne-block-idx">BLOCO ' + String((Number(b.position) || 0) + 1).padStart(3, '0') + (b.auto_created ? ' · AUTOMÁTICO' : ' · MANUAL') + '</div>'
+      +   '<h2>' + esc(b.name) + '</h2>'
+      +   '<div class="ne-muted">' + esc((siteDe(b.site_id) || {}).name || 'sem site') + ' · ' + dinheiro(valor) + '</div>'
+      +   '<div class="ne-block-proc">' + badgeProc(b.process) + '</div>'
+      +   '<div class="ne-block-stage">'
+      +     '<span class="ne-stage-d">' + n('rascunho') + ' A pedir</span>'
+      +     '<span class="ne-stage-r">' + n('solicitado') + ' Pedido</span>'
+      +     '<span class="ne-stage-i">' + (n('nota_recebida') + n('concluido')) + ' com NF / concluído</span>'
+      +   '</div>'
+      + '</div>'
+      + '<div class="ne-count' + (itens.length >= 4 ? ' cheio' : '') + '">' + itens.length + '/4</div></div>'
+
+      + '<div class="ne-block-acoes">'
+      +   '<button class="ne-btn ne-btn-sm ne-btn-sec"' + (nRasc ? '' : ' disabled') + ' onclick="MNE.pedirBloco(\'' + b.id + '\')">✓ Solicitar no SAP (' + nRasc + ')</button>'
+      +   '<button class="ne-btn ne-btn-sm"' + (nSol ? '' : ' disabled') + ' onclick="MNE.notaDoBloco(\'' + b.id + '\')">🧾 Registrar NF deste bloco (' + nSol + ')</button>'
+      + '</div>'
+
+      + '<div class="ne-block-ops">'
+      +   '<div class="ne-block-st"><span>Status do bloco</span>'
+      +     '<select id="neBlkSt-' + b.id + '">'
+      +       ['solicitado', 'rascunho', 'concluido', 'cancelado'].map(s => '<option value="' + s + '">' + esc(ST_NOME[s]) + '</option>').join('')
+      +     '</select>'
+      +     '<button class="ne-btn ne-btn-sm ne-btn-sec" onclick="MNE.statusBloco(\'' + b.id + '\')">Aplicar aos itens</button></div>'
+      +   '<div class="ne-inline">'
+      +     '<button class="ne-ico" title="Renomear" onclick="MNE.renomearBloco(\'' + b.id + '\')">✎</button>'
+      +     '<button class="ne-ico ne-ico-danger" title="Excluir bloco (os materiais voltam a ficar soltos)" onclick="MNE.excluirBloco(\'' + b.id + '\')">🗑</button>'
+      +   '</div>'
+      + '</div>'
+
+      + '<div class="ne-block-items">'
+      + (itens.length ? itens.map(m => '<div class="ne-block-item ne-item-' + (m.process === 'cnc' ? 'cnc' : m.process === '3d' ? '3d' : 'outro') + '">'
+          + '<div class="ne-block-item-main"><strong>' + (esc(m.description) || esc(m.sap_code) || '—') + '</strong>'
+          + '<small>' + (esc(m.sap_code) || '—') + ' · Forms ' + (esc(m.forms_code) || '—') + ' · ' + esc(m.quantity) + ' × ' + dinheiro(m.unit_price) + '</small></div>'
+          + badgeProc(m.process) + badgeSt(m.status)
+          + '<button class="ne-ico" title="Tirar do bloco" onclick="MNE.tirarDoBloco(\'' + m.id + '\')">⤬</button>'
+          + '</div>').join('')
+        : '<div class="ne-block-vazio">Bloco vazio — mova materiais em Lançamentos.</div>')
+      + '</div></div>';
+  }
+
+  /* ─────────────────────── 4. NOTAS FISCAIS ─────────────────────── */
+
+  function viewInvoices() {
+    const lst = notas.slice().sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    const soma = lst.reduce((a, n) => a + valorDaNota(n.id), 0);
+    const prontos = mats.filter(m => m.status === 'solicitado').length;
+
+    let h = cabecalho('DOCUMENTOS FISCAIS', 'Notas fiscais',
+      'Após solicitar no SAP, escolha o bloco, informe número e chave da nota e vincule até quatro materiais.',
+      '<button class="ne-btn" onclick="MNE.novaNota()">＋ Registrar NF</button>');
+    h += painelAguardando();
+
+    if (!lst.length) return h + '<div class="ne-panel">' + vazio('Nenhuma nota fiscal registrada', 'Peça o bloco no SAP e registre a nota quando ela chegar.') + '</div>';
+
+    h += '<div class="ne-panel"><div class="ne-inv-cards">' + lst.map(n => {
+      const itens = matsDaNota(n.id);
+      return '<div class="ne-inv-card"><div class="ne-inv-top"><div>'
+        + '<span class="ne-eyebrow">NOTA FISCAL</span><h3>NF ' + esc(n.number) + '</h3>'
+        + '<p>Emitida em ' + dataBr(n.issued_on) + ' · ' + itens.length + ' material(is)</p></div>'
+        + '<div class="ne-inv-valor">' + dinheiro(valorDaNota(n.id)) + '</div></div>'
+        + '<div class="ne-inv-tags">' + (itens.length ? itens.map(m => '<span class="ne-inv-tag">'
+            + (esc(m.description) || esc(m.sap_code) || 'material') + '</span>').join('')
+          : '<span class="ne-inv-tag">sem material vinculado</span>') + '</div>'
+        + (n.access_key ? '<div class="ne-key"><span>Chave: <code>' + esc(n.access_key) + '</code></span>'
+            + '<button class="ne-ico" title="Copiar a chave" onclick="MNE.copiar(\'' + esc(n.access_key) + '\')">⧉</button></div>' : '')
+        + (n.notes ? '<div class="ne-muted">' + esc(n.notes) + '</div>' : '')
+        + '<div class="ne-inv-acoes">'
+        +   '<button class="ne-btn ne-btn-sm ne-btn-sec" onclick="MNE.editarNota(\'' + n.id + '\')">✎ Editar</button>'
+        +   '<button class="ne-btn ne-btn-sm ne-btn-sec" onclick="MNE.concluirNota(\'' + n.id + '\')">✓ Marcar entregue</button>'
+        +   '<button class="ne-btn ne-btn-sm ne-btn-danger" onclick="MNE.excluirNota(\'' + n.id + '\')">🗑 Excluir</button>'
+        + '</div></div>';
+    }).join('') + '</div></div>';
+    return h;
+  }
+
+  /* Blocos com material já pedido no SAP e ainda sem nota — o atalho que
+     evita procurar o bloco na mão quando a nota chega. */
+  function painelAguardando() {
+    const pend = b => matsDoBloco(b.id).filter(m => m.status === 'solicitado' && !vincDe(m.id));
+    const lst = blocos.map(b => ({ b: b, p: pend(b) })).filter(x => x.p.length)
+      .sort((a, b) => (Number(a.b.position) || 0) - (Number(b.b.position) || 0));
+    let h = '<div class="ne-panel ne-inv-ready"><div class="ne-subhead"><div><h2>Blocos aguardando nota</h2>'
+      + '<p>Você pode chamar os materiais já solicitados de um bloco diretamente aqui.</p></div></div>';
+    if (!lst.length) {
+      return h + '<p class="ne-muted">Nenhum material aguardando NF. Vá a Blocos e clique em "Solicitar no SAP".</p></div>';
+    }
+    h += '<div class="ne-ready-grid">' + lst.map(x => {
+      const procs = [...new Set(x.p.map(m => m.process))];
+      return '<div class="ne-ready-card ne-block-' + (x.b.process === 'cnc' ? 'cnc' : x.b.process === '3d' ? '3d' : 'outro') + '">'
+        + '<strong>' + esc(x.b.name) + '</strong>'
+        + '<div class="ne-muted">' + x.p.length + ' aguardando nota · ' + dinheiro(x.p.reduce((a, m) => a + totalItem(m), 0)) + '</div>'
+        + '<div style="margin:7px 0">' + procs.map(badgeProc).join(' ') + '</div>'
+        + '<button class="ne-btn ne-btn-sm" onclick="MNE.notaDoBloco(\'' + x.b.id + '\')">🧾 Chamar bloco para NF</button>'
+        + '</div>';
+    }).join('') + '</div></div>';
+    return h;
+  }
+
+  /* ──────────────────── 5. CONSULTA SAP / FORMS ──────────────────── */
+
+  function viewLookup() {
+    const termos = String(buscaLookup || '').split(/[\s,;\r\n\t]+/).map(s => s.trim()).filter(Boolean);
+    let h = cabecalho('CONSULTA', 'Consulta SAP / Forms',
+      'Cole vários códigos de uma vez — um por linha ou separados por vírgula — e veja onde cada um está.',
+      '<button class="ne-btn ne-btn-sec" onclick="MNE.copiarFormsSap()">⧉ Copiar Forms + SAP</button>'
+      + '<button class="ne-btn ne-btn-sec" onclick="MNE.limpaLookup()">Limpar</button>');
+    h += '<div class="ne-panel"><div class="ne-batch">'
+      + '<textarea rows="5" placeholder="85506507&#10;6530052307&#10;ou 915, 916, 917" oninput="MNE.setLookup(this.value)">' + esc(buscaLookup) + '</textarea>'
+      + '<div class="ne-batch-bottom"><span class="ne-muted">' + termos.length + ' código(s) consultado(s)</span></div>'
+      + '</div>';
+
+    if (!termos.length) { h += vazio('Nada consultado ainda', 'Cole os códigos SAP ou Forms acima.'); return h + '</div>'; }
+
+    const linhas = todas();
+    const achados = [], faltando = [];
+    termos.forEach(t => {
+      const k = chaveBusca(t);
+      const hits = linhas.filter(m => chaveBusca(m.sap_code) === k || chaveBusca(m.forms_code) === k);
+      if (hits.length) hits.forEach(x => { if (achados.indexOf(x) < 0) achados.push(x); });
+      else faltando.push(t);
+    });
+
+    h += '<div class="ne-stats">'
+      + statCard('Consultados', termos.length, '🔍', '')
+      + statCard('Encontrados', achados.length, '✅', 'materiais cadastrados')
+      + statCard('Sem cadastro', faltando.length, '❔', 'não existem na base')
+      + statCard('Valor encontrado', dinheiro(achados.reduce((a, m) => a + totalItem(m), 0)), '💰', '')
+      + '</div>';
+    if (faltando.length) h += '<div class="ne-notice">❔ <div>Sem cadastro: <b>' + esc(faltando.join(', ')) + '</b></div></div>';
+    h += achados.length ? tabelaMateriais(achados, false) : vazio('Nenhum código encontrado', 'Confira se os códigos estão certos.');
+    return h + '</div>';
+  }
+
+  /* ───────────────────────── 6. HISTÓRICO ───────────────────────── */
+
+  function viewActivity() {
+    const ACAO = { insert: ['＋', 'criou'], update: ['✎', 'alterou'], status: ['⇄', 'mudou o status'], delete: ['🗑', 'excluiu'] };
+    const ENT = { materials: 'material', blocks: 'bloco', invoices: 'nota fiscal', sites: 'site' };
+    let h = cabecalho('AUDITORIA', 'Histórico', 'As últimas ' + hist.length + ' movimentações registradas neste navegador e sincronizadas na nuvem.',
+      '<button class="ne-btn ne-btn-sec" onclick="MNE.limpaHist()">Limpar histórico</button>');
+    if (!hist.length) return h + '<div class="ne-panel">' + vazio('Sem movimentações', 'Tudo que for criado, alterado ou excluído aparece aqui.') + '</div>';
+    h += '<div class="ne-panel"><div class="ne-activity">'
+      + hist.slice(0, 200).map(a => {
+        const ac = ACAO[a.action] || ['•', a.action];
+        return '<div class="ne-act"><div class="ne-act-ico">' + ac[0] + '</div>'
+          + '<div><strong>' + esc(ac[1]) + ' ' + esc(ENT[a.entity] || a.entity) + '</strong>'
+          + '<small>' + (esc(a.summary) || '—') + (a.author ? ' · ' + esc(a.author) : '') + '</small></div>'
+          + '<time>' + esc(new Date(a.happened_at).toLocaleString('pt-BR')) + '</time></div>';
+      }).join('') + '</div></div>';
+    return h;
+  }
+
+  /* ──────────────────────── 7. CONFIGURAÇÕES ──────────────────────── */
+
+  function viewSettings() {
+    const bytes = [K.mat, K.blk, K.nf, K.lnk, K.site, K.log]
+      .reduce((a, k) => a + ((localStorage.getItem(k) || '').length), 0);
+    let h = cabecalho('AJUSTES', 'Configurações', 'Sites, espaço ocupado e manutenção da base.',
+      '<button class="ne-btn" onclick="MNE.novoSite()">＋ Novo site</button>');
+    h += '<div class="ne-settings-grid">';
+    h += '<div class="ne-panel"><div class="ne-subhead"><div><h2>Sites / fábricas</h2>'
+      + '<p>' + sites.length + ' cadastrado(s) — um site com materiais não pode ser excluído</p></div></div>'
+      + sites.map(s => {
+        const n = mats.filter(m => m.site_id === s.id).length;
+        return '<div class="ne-site-row"><div class="ne-site-ico">🏭</div>'
+          + '<div><strong>' + esc(s.name) + '</strong><small>' + (esc(s.region) || 'Sem região') + ' · centro '
+          + (esc(s.center_code) || '—') + ' · ' + n + ' material(is)</small></div>'
+          + '<button class="ne-ico" title="Renomear" onclick="MNE.renomearSite(\'' + s.id + '\')">✎</button>'
+          + '<button class="ne-ico ne-ico-danger" title="Excluir" onclick="MNE.excluirSite(\'' + s.id + '\')">🗑</button></div>';
+      }).join('') + '</div>';
+
+    h += '<div class="ne-panel"><div class="ne-subhead"><div><h2>Armazenamento</h2><p>quanto este módulo ocupa no navegador</p></div></div>'
+      + '<div class="ne-set-det"><span>Materiais</span><b>' + mats.length + '</b></div>'
+      + '<div class="ne-set-det"><span>Blocos</span><b>' + blocos.length + '</b></div>'
+      + '<div class="ne-set-det"><span>Notas fiscais</span><b>' + notas.length + '</b></div>'
+      + '<div class="ne-set-det"><span>Vínculos nota ↔ material</span><b>' + vincs.length + '</b></div>'
+      + '<div class="ne-set-det"><span>Linhas de histórico</span><b>' + hist.length + '</b></div>'
+      + '<div class="ne-set-det"><span>Espaço ocupado</span><b>' + (bytes / 1024).toFixed(0) + ' KB</b></div>'
+      + '<div class="ne-notice">☁ <div>Os dados são gravados neste navegador e espelhados no Firebase que o resto do app já usa, '
+      + 'então a equipe vê as mesmas informações.</div></div>'
+      + '<div class="ne-inv-acoes"><button class="ne-btn ne-btn-sec" onclick="MNE.exportar()">⬇ Exportar tudo em CSV</button>'
+      + '<button class="ne-btn ne-btn-danger" onclick="MNE.zerar()">Zerar o módulo</button></div>'
+      + '</div>';
+    h += '</div>';
+    return h;
+  }
+
+  /* ═══════════════════════════ MODAIS ═══════════════════════════ */
+
+  function abreModal(tipo, dados) { modal = { tipo: tipo, dados: dados || {} }; renderModal(); }
+  function fechaModal() { modal = null; const m = document.getElementById('neModal'); if (m) m.innerHTML = ''; }
+
+  const campo = (rotulo, inner, span, dica) =>
+    '<div class="ne-field' + (span ? ' ne-span2' : '') + '"><label class="ne-flabel">' + esc(rotulo) + '</label>'
+    + inner + (dica ? '<span class="ne-fhint">' + esc(dica) + '</span>' : '') + '</div>';
+
+  function renderModal() {
+    const alvo = document.getElementById('neModal');
+    if (!alvo) return;
+    if (!modal) { alvo.innerHTML = ''; return; }
+    const m = modal.tipo === 'material' ? modalMaterial()
+      : modal.tipo === 'colagem' ? modalColagem()
+      : modal.tipo === 'nota' ? modalNota()
+      : modal.tipo === 'site' ? modalSite()
+      : modal.tipo === 'texto' ? modalTexto()
+      : '';
+    alvo.innerHTML = '<div class="ne-backdrop" onclick="if(event.target===this)MNE.fechaModal()">' + m + '</div>';
+    const f = alvo.querySelector('input,textarea,select');
+    if (f) f.focus();
+  }
+
+  /* ── novo / editar material ── */
+  function modalMaterial() {
+    const d = modal.dados.row || {};
+    const novo = !d.id;
+    const travado = d.id && !!vincDe(d.id);
+    return '<div class="ne-modal ne-modal-wide"><div class="ne-modal-top"><h2>'
+      + (novo ? 'Novo lançamento' : 'Editar lançamento') + '</h2>'
+      + '<button class="ne-ico" onclick="MNE.fechaModal()">✕</button></div><div class="ne-modal-body">'
+      + (travado ? '<div class="ne-notice">🔒 <div>Este material está vinculado a uma nota fiscal. Para mudar SAP, Forms, descrição, quantidade, valor, site ou data, desvincule a nota antes.</div></div>' : '')
+      + '<div class="ne-form-grid">'
+      + campo('Código SAP', '<input id="neF_sap" value="' + esc(d.sap_code) + '"' + (travado ? ' disabled' : '') + '>', false, 'SAP ou Forms: pelo menos um')
+      + campo('Forms', '<input id="neF_forms" value="' + esc(d.forms_code) + '"' + (travado ? ' disabled' : '') + '>')
+      + campo('Descrição', '<input id="neF_desc" value="' + esc(d.description) + '"' + (travado ? ' disabled' : '') + '>', true)
+      + campo('Processo', '<select id="neF_proc">' + PROCESSES.map(p => '<option value="' + p + '"' + (p === (d.process || 'indefinido') ? ' selected' : '') + '>' + esc(PR_NOME[p]) + '</option>').join('') + '</select>')
+      + campo('Site / fábrica', '<select id="neF_site"' + (travado ? ' disabled' : '') + '><option value="">—</option>'
+          + sites.map(s => '<option value="' + esc(s.id) + '"' + (s.id === d.site_id ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('') + '</select>')
+      + campo('Quantidade', '<input id="neF_qt" inputmode="decimal" oninput="MNE.recalcula()" value="' + esc(d.quantity == null ? 1 : d.quantity) + '"' + (travado ? ' disabled' : '') + '>')
+      + campo('Valor unitário (R$)', '<input id="neF_vu" inputmode="decimal" oninput="MNE.recalcula()" value="' + esc(brl(d.unit_price)) + '"' + (travado ? ' disabled' : '') + '>', false, 'aceita vírgula: 1.234,56')
+      + campo('Total calculado', '<div class="ne-ro" id="neF_tot">' + dinheiro((Number(d.quantity) || 0) * (Number(d.unit_price) || 0)) + '</div>')
+      + campo('Data da solicitação', '<input id="neF_dt" type="date" value="' + esc(d.requested_on || hoje()) + '"' + (travado ? ' disabled' : '') + '>')
+      + campo('Status', '<select id="neF_st">' + STATUSES.map(s => '<option value="' + s + '"' + (s === (d.status || 'rascunho') ? ' selected' : '') + (s === 'nota_recebida' && !travado ? ' disabled' : '') + '>' + esc(ST_NOME[s]) + '</option>').join('') + '</select>',
+          false, '"Nota recebida" só pela nota fiscal')
+      + campo('Bloco', '<select id="neF_blk"><option value="">— automático —</option>'
+          + blocos.map(b => '<option value="' + esc(b.id) + '"' + (b.id === d.block_id ? ' selected' : '') + '>' + esc(b.name) + ' (' + matsDoBloco(b.id).length + '/4)</option>').join('') + '</select>')
+      + campo('Observações', '<textarea id="neF_obs" rows="2">' + esc(d.notes) + '</textarea>', true)
+      + '</div>'
+      + '<div class="ne-modal-acoes"><button class="ne-btn ne-btn-sec" onclick="MNE.fechaModal()">Cancelar</button>'
+      + '<button class="ne-btn" onclick="MNE.salvarMaterial(' + (novo ? 'null' : "'" + d.id + "'") + ')">Salvar</button></div>'
+      + '</div></div>';
+  }
+
+  /* ── colar do Excel ── */
+  function modalColagem() {
+    let previa = '';
+    if (previaCol) {
+      previa = '<div class="ne-batch-prev">' + previaCol.map(l =>
+        '<div><strong>' + (esc(l.sap_code) || esc(l.forms_code)) + '</strong>'
+        + '<span>' + (esc(l.description) || '(sem descrição)') + ' · ' + esc(PR_NOME[l.process]) + ' · '
+        + esc(l.quantity) + ' × ' + dinheiro(l.unit_price) + ' = ' + dinheiro(l.quantity * l.unit_price) + '</span></div>').join('')
+        + '</div>';
+    }
+    return '<div class="ne-modal ne-modal-wide"><div class="ne-modal-top"><h2>Colar do Excel</h2>'
+      + '<button class="ne-ico" onclick="MNE.fechaModal()">✕</button></div><div class="ne-modal-body">'
+      + '<div class="ne-notice">📋 <div>Cole <b>sem cabeçalho</b>, na ordem:<br>'
+      + '<b>SAP | Forms | Descrição | Processo | Quantidade | Valor unitário</b><br>'
+      + 'O processo aceita <code>cnc</code>, <code>3d</code> ou <code>outro</code>. O valor pode ter vírgula decimal. '
+      + 'Confira a prévia antes de gravar.</div></div>'
+      + '<div class="ne-form-grid">'
+      + campo('Site / fábrica destes materiais', '<select id="neC_site"><option value="">—</option>'
+          + sites.map(s => '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>').join('') + '</select>')
+      + campo('Data da solicitação', '<input id="neC_dt" type="date" value="' + hoje() + '">')
+      + '</div>'
+      + '<textarea class="ne-paste" rows="8" placeholder="85506507&#9;915&#9;Tarugo inox 304&#9;cnc&#9;4&#9;71,80" '
+      + 'oninput="MNE.setColagem(this.value)">' + esc(rascunhoCol) + '</textarea>'
+      + previa
+      + '<div class="ne-modal-acoes">'
+      + '<span class="ne-muted ne-grow">' + (previaCol ? previaCol.length + ' linha(s) prontas' : 'cole o conteúdo acima') + '</span>'
+      + '<button class="ne-btn ne-btn-sec" onclick="MNE.fechaModal()">Cancelar</button>'
+      + '<button class="ne-btn ne-btn-sec" onclick="MNE.previaColagem()">Conferir</button>'
+      + '<button class="ne-btn"' + (previaCol ? '' : ' disabled') + ' onclick="MNE.gravarColagem()">Gravar ' + (previaCol ? previaCol.length : '') + '</button>'
+      + '</div></div></div>';
+  }
+
+  /* ── nota fiscal: cabeçalho + escolha de 1 a 4 materiais ── */
+  function modalNota() {
+    const d = modal.dados.row || {};
+    const escolhidos = modal.dados.sel || [];
+    const busca = modal.dados.busca || '';
+    const q = chaveBusca(busca);
+    const elegiveis = todas().filter(m =>
+      (m.status === 'solicitado' && !m.invoice_id) || escolhidos.indexOf(m.id) >= 0)
+      .filter(m => !q || [m.sap_code, m.forms_code, m.description, m.block_name].some(v => chaveBusca(v).indexOf(q) >= 0));
+    const soma = escolhidos.reduce((a, id) => { const m = matDe(id); return a + (m ? totalItem(m) : 0); }, 0);
+
+    return '<div class="ne-modal ne-modal-wide"><div class="ne-modal-top"><h2>'
+      + (d.id ? 'Editar nota fiscal' : 'Registrar nota fiscal') + '</h2>'
+      + '<button class="ne-ico" onclick="MNE.fechaModal()">✕</button></div><div class="ne-modal-body">'
+      + '<div class="ne-form-grid">'
+      + campo('Número da nota', '<input id="neN_num" value="' + esc(d.number) + '">', false, 'obrigatório')
+      + campo('Data de emissão', '<input id="neN_dt" type="date" value="' + esc(d.issued_on || hoje()) + '">')
+      + campo('Chave de acesso NF-e', '<input id="neN_key" inputmode="numeric" maxlength="44" value="' + esc(d.access_key) + '">', true, 'opcional — 44 números')
+      + campo('Observações', '<textarea id="neN_obs" rows="2">' + esc(d.notes) + '</textarea>', true)
+      + campo('Carregar materiais de um bloco (até 4)',
+          '<select onchange="MNE.carregaBloco(this.value)"><option value="">Escolher bloco ou selecionar manualmente</option>'
+          + blocos.map(b => {
+              const el = matsDoBloco(b.id).filter(x => x.status === 'solicitado' && !vincDe(x.id));
+              return el.length ? '<option value="' + esc(b.id) + '">' + esc(b.name) + ' · ' + esc(PR_NOME[b.process])
+                + ' · ' + el.length + ' disponível(is)</option>' : '';
+            }).join('') + '</select>', true)
+      + '</div>'
+      + '<div class="ne-subhead ne-compact"><div><h2>Materiais da nota</h2>'
+      + '<p>de 1 a 4 · só aparecem os que estão com status <b>Pedido</b> e sem outra nota</p></div>'
+      + '<span class="ne-count' + (escolhidos.length >= 4 ? ' cheio' : '') + '">' + escolhidos.length + '/4</span></div>'
+      + '<div class="ne-search ne-inv-busca"><span>🔎</span><input placeholder="Buscar material por SAP, Forms, descrição ou bloco" value="' + esc(busca) + '" oninput="MNE.setBuscaNota(this.value)"></div>'
+      + '<div class="ne-picker">'
+      + (elegiveis.length ? elegiveis.map(m => {
+          const on = escolhidos.indexOf(m.id) >= 0;
+          return '<label class="ne-choice' + (on ? ' escolhido' : '') + '">'
+            + '<input type="checkbox"' + (on ? ' checked' : '') + ' onchange="MNE.marcaNota(\'' + m.id + '\',this.checked)">'
+            + '<span class="ne-choice-main"><strong>' + (esc(m.description) || esc(m.sap_code) || '—') + '</strong>'
+            + '<small>' + (esc(m.sap_code) || '—') + ' · Forms ' + (esc(m.forms_code) || '—') + ' · ' + (esc(m.block_name) || 'sem bloco') + '</small></span>'
+            + '<span class="ne-num">' + dinheiro(totalItem(m)) + '</span></label>';
+        }).join('')
+        : '<div class="ne-picker-empty">Nenhum material com status <b>Pedido</b> disponível. Peça o bloco no SAP primeiro.</div>')
+      + '</div>'
+      + '<div class="ne-inv-total"><span>Total da nota</span><strong>' + dinheiro(soma) + '</strong></div>'
+      + '<div class="ne-modal-acoes"><button class="ne-btn ne-btn-sec" onclick="MNE.fechaModal()">Cancelar</button>'
+      + '<button class="ne-btn" onclick="MNE.salvarNota(' + (d.id ? "'" + d.id + "'" : 'null') + ')">Salvar nota</button></div>'
+      + '</div></div>';
+  }
+
+  /* ── site / fábrica ── */
+  function modalSite() {
+    const d = modal.dados.row || {};
+    return '<div class="ne-modal"><div class="ne-modal-top"><h2>' + (d.id ? 'Editar site' : 'Adicionar site') + '</h2>'
+      + '<button class="ne-ico" onclick="MNE.fechaModal()">✕</button></div><div class="ne-modal-body">'
+      + '<div class="ne-form-grid">'
+      + campo('Nome', '<input id="neS_nome" value="' + esc(d.name) + '" placeholder="Ex.: Valinhos">', true)
+      + campo('Região', '<input id="neS_regiao" value="' + esc(d.region) + '" placeholder="Ex.: Sudeste">')
+      + campo('Centro SAP', '<input id="neS_centro" value="' + esc(d.center_code) + '" placeholder="Ex.: 3178">')
+      + campo('Transportadora / observações', '<input id="neS_obs" value="' + esc(d.carrier_info) + '">', true)
+      + '</div>'
+      + '<div class="ne-modal-acoes"><button class="ne-btn ne-btn-sec" onclick="MNE.fechaModal()">Cancelar</button>'
+      + '<button class="ne-btn" onclick="MNE.salvarSite(' + (d.id ? "'" + d.id + "'" : 'null') + ')">Salvar site</button></div>'
+      + '</div></div>';
+  }
+
+  /* ── caixinha de texto reutilizável (renomear bloco) ── */
+  function modalTexto() {
+    const d = modal.dados;
+    return '<div class="ne-modal"><div class="ne-modal-top"><h2>' + esc(d.titulo) + '</h2>'
+      + '<button class="ne-ico" onclick="MNE.fechaModal()">✕</button></div><div class="ne-modal-body">'
+      + campo(d.rotulo, '<input id="neT_val" value="' + esc(d.valor || '') + '" onkeydown="if(event.key===\'Enter\')MNE.confirmaTexto()">', true, d.dica)
+      + '<div class="ne-modal-acoes"><button class="ne-btn ne-btn-sec" onclick="MNE.fechaModal()">Cancelar</button>'
+      + '<button class="ne-btn" onclick="MNE.confirmaTexto()">Salvar</button></div></div></div>';
+  }
+
+  /* ═══════════════════════════ AÇÕES ═══════════════════════════ */
+
+  const val = id => { const e = document.getElementById(id); return e ? e.value : ''; };
+  const brl = v => (Number(v) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  /* O total embaixo dos campos acompanha a digitação. */
+  function recalcula() {
+    const e = document.getElementById('neF_tot');
+    if (e) e.textContent = dinheiro(num(val('neF_qt')) * num(val('neF_vu')));
+  }
+
+  function setFiltro(k, v) { filtro[k] = v; pag = 1; render(); }
+  /* Clicar num status da visão geral já leva para a lista filtrada. */
+  function filtraPor(st) { Object.keys(filtro).forEach(k => filtro[k] = ''); filtro.status = st; tela = 'records'; pag = 1; sel = []; render(); }
+  function limpaFiltros() { Object.keys(filtro).forEach(k => filtro[k] = ''); pag = 1; render(); }
+  function setOrdem(v) { ordem = v; pag = 1; render(); }
+  function pagina(p) { pag = Math.max(1, p); render(); }
+  function marcar(id, on) { sel = on ? sel.concat([id]) : sel.filter(x => x !== id); render(); }
+  function marcarTodos(on) {
+    const ids = filtradas().slice((pag - 1) * POR_PAG, pag * POR_PAG).map(m => m.id);
+    sel = on ? [...new Set(sel.concat(ids))] : sel.filter(x => ids.indexOf(x) < 0);
+    render();
+  }
+  function limpaSel() { sel = []; render(); }
+  function setBuscaBloco(v) { buscaBloco = v; render(); }
+  function setFiltroBloco(v) { filtroBloco = v; render(); }
+  function setLookup(v) { buscaLookup = v; render(); }
+  function limpaLookup() { buscaLookup = ''; render(); }
+  /* Monta a tabela Forms → SAP pronta para colar de volta no Excel. */
+  function copiarFormsSap() {
+    const termos = [...new Set(String(buscaLookup || '').split(/[\s,;\r\n\t]+/).map(t => t.trim()).filter(Boolean))];
+    if (!termos.length) { toastNE('Cole os códigos antes de copiar.', true); return; }
+    const linhas = ['Forms\tCódigo SAP'];
+    termos.forEach(t => {
+      const k = chaveBusca(t);
+      const saps = [...new Set(mats.filter(m => chaveBusca(m.forms_code) === k || chaveBusca(m.sap_code) === k)
+        .map(m => m.sap_code).filter(Boolean))];
+      if (saps.length) saps.forEach(sp => linhas.push(t + '\t' + sp));
+      else linhas.push(t + '\tNÃO ENCONTRADO');
+    });
+    try { navigator.clipboard.writeText(linhas.join('\n')); toastNE('Tabela Forms → SAP copiada (' + termos.length + ' código(s)).'); }
+    catch (e) { toastNE('Não foi possível copiar.', true); }
+  }
+
+  function novoMaterial() { abreModal('material', { row: {} }); }
+  function editarMaterial(id) { abreModal('material', { row: Object.assign({}, matDe(id)) }); }
+
+  function salvarMaterial(id) {
+    tentar(() => {
+      const row = {
+        sap_code: val('neF_sap').trim(), forms_code: val('neF_forms').trim(),
+        description: val('neF_desc').trim(), process: val('neF_proc'),
+        site_id: val('neF_site') || null, quantity: num(val('neF_qt')),
+        unit_price: num(val('neF_vu')), requested_on: val('neF_dt') || hoje(),
+        status: val('neF_st'), block_id: val('neF_blk') || null, notes: val('neF_obs').trim()
+      };
+      if (!row.sap_code && !row.forms_code) throw new Error('Preencha o código SAP ou o Forms.');
+      if (!(row.quantity > 0)) throw new Error('A quantidade precisa ser maior que zero.');
+      if (id) row.id = id;
+      salvaMaterial(row);
+      fechaModal(); render();
+      toastNE(id ? 'Lançamento atualizado.' : 'Lançamento cadastrado.');
+    });
+  }
+
+  function excluirMaterial(id) {
+    const m = matDe(id);
+    if (!confirm('Excluir o material "' + ((m && m.description) || refMat(m)) + '"?\n\nEssa ação não pode ser desfeita.')) return;
+    tentar(() => { excluiMaterial(id); sel = sel.filter(x => x !== id); render(); toastNE('Material excluído.'); });
+  }
+
+  function excluirSelecionados() {
+    if (!sel.length) return;
+    if (!confirm('Excluir ' + sel.length + ' material(is)?\n\nEssa ação não pode ser desfeita.')) return;
+    tentar(() => {
+      const travados = sel.filter(id => vincDe(id));
+      if (travados.length) throw new Error(travados.length + ' material(is) têm nota fiscal. Remova a nota antes de excluir.');
+      sel.forEach(id => excluiMaterial(id));
+      sel = []; render(); toastNE('Materiais excluídos.');
+    });
+  }
+
+  function statusSelecionados() {
+    tentar(() => { defineStatus(sel, val('neBulkSt')); render(); toastNE('Status atualizado.'); });
+  }
+  function moverSelecionados() {
+    tentar(() => { moveMateriais(sel, val('neBulkBloco')); sel = []; render(); toastNE('Materiais movidos.'); });
+  }
+
+  /* ── blocos ── */
+  function agrupar() {
+    tentar(() => { const n = agrupaSoltos(); render(); toastNE(n ? n + ' material(is) agrupado(s).' : 'Nenhum material solto para agrupar.'); });
+  }
+  function novoBloco() {
+    abreModal('texto', { titulo: 'Novo bloco', rotulo: 'Nome do bloco', valor: '',
+      dica: 'Ex.: BLOCO 012 — CNC', acao: 'novoBloco' });
+  }
+  function renomearBloco(id) {
+    const b = blocoDe(id);
+    abreModal('texto', { titulo: 'Renomear bloco', rotulo: 'Nome do bloco', valor: (b && b.name) || '', acao: 'renomeaBloco', id: id });
+  }
+  function excluirBloco(id) {
+    const n = matsDoBloco(id).length;
+    if (!confirm('Excluir este bloco?\n\n' + (n ? 'Os ' + n + ' material(is) voltam a ficar soltos — nenhum é apagado.' : 'O bloco está vazio.'))) return;
+    tentar(() => { excluiBloco(id); render(); toastNE('Bloco excluído.'); });
+  }
+  function statusBloco(id) {
+    tentar(() => {
+      const ids = matsDoBloco(id).map(m => m.id);
+      if (!ids.length) throw new Error('O bloco não tem materiais.');
+      defineStatus(ids, val('neBlkSt-' + id));
+      render(); toastNE('Status do bloco atualizado.');
+    });
+  }
+  function pedirBloco(id) {
+    tentar(() => {
+      const ids = matsDoBloco(id).filter(m => m.status === 'rascunho').map(m => m.id);
+      if (!ids.length) throw new Error('Nenhum material deste bloco está "A pedir".');
+      defineStatus(ids, 'solicitado');
+      render(); toastNE(ids.length + ' material(is) marcados como Pedido no SAP.');
+    });
+  }
+  function notaDoBloco(id) {
+    const itens = matsDoBloco(id).filter(m => m.status === 'solicitado');
+    if (!itens.length) { toastNE('Peça o bloco no SAP antes de registrar a nota.', true); return; }
+    abreModal('nota', { row: {}, sel: itens.slice(0, 4).map(m => m.id), busca: '' });
+  }
+  function tirarDoBloco(id) { tentar(() => { moveMateriais([id], null); render(); }); }
+
+  /* ── notas ── */
+  function novaNota() { abreModal('nota', { row: {}, sel: [], busca: '' }); }
+  function editarNota(id) {
+    abreModal('nota', { row: Object.assign({}, notaDe(id)), sel: matsDaNota(id).map(m => m.id), busca: '' });
+  }
+  function setBuscaNota(v) { modal.dados.busca = v; renderModal(); }
+  /* Escolher um bloco substitui a seleção pelos 4 primeiros elegíveis dele. */
+  function carregaBloco(id) {
+    modal.dados.row = lerCabecalhoNota();
+    modal.dados.sel = id ? matsDoBloco(id).filter(m => m.status === 'solicitado' && !vincDe(m.id)).slice(0, 4).map(m => m.id) : [];
+    renderModal();
+  }
+  function marcaNota(id, on) {
+    const s = modal.dados.sel || [];
+    if (on && s.length >= 4 && s.indexOf(id) < 0) { toastNE('Selecione de 1 a 4 materiais por nota fiscal.', true); renderModal(); return; }
+    modal.dados.sel = on ? s.concat([id]) : s.filter(x => x !== id);
+    modal.dados.row = lerCabecalhoNota();
+    renderModal();
+  }
+  const lerCabecalhoNota = () => Object.assign({}, modal.dados.row, {
+    number: val('neN_num'), issued_on: val('neN_dt'),
+    access_key: val('neN_key').replace(/\D/g, ''), notes: val('neN_obs')
+  });
+  function salvarNota(id) {
+    tentar(() => {
+      const row = lerCabecalhoNota();
+      if (id) row.id = id;
+      salvaNota(row, modal.dados.sel || []);
+      fechaModal(); render();
+      toastNE(id ? 'Nota fiscal atualizada.' : 'Nota fiscal registrada.');
+    });
+  }
+  function excluirNota(id) {
+    const n = notaDe(id), q = matsDaNota(id).length;
+    if (!confirm('Excluir a nota fiscal ' + ((n && n.number) || '') + '?\n\n'
+      + (q ? 'Os ' + q + ' material(is) NÃO são excluídos: cada um volta ao status que tinha antes da nota.' : ''))) return;
+    tentar(() => { excluiNota(id); render(); toastNE('Nota excluída — os materiais voltaram ao status anterior.'); });
+  }
+  function concluirNota(id) {
+    tentar(() => {
+      const ids = matsDaNota(id).map(m => m.id);
+      if (!ids.length) throw new Error('Esta nota não tem material vinculado.');
+      defineStatus(ids, 'concluido');
+      render(); toastNE(ids.length + ' material(is) marcados como Concluído.');
+    });
+  }
+  function copiar(txt) {
+    try { navigator.clipboard.writeText(txt); toastNE('Chave copiada.'); }
+    catch (e) { toastNE('Não consegui copiar automaticamente.', true); }
+  }
+
+  /* ── colagem do Excel ── */
+  function abrirColagem() { rascunhoCol = ''; previaCol = null; abreModal('colagem', {}); }
+  function setColagem(v) { rascunhoCol = v; previaCol = null; }
+  function previaColagem() {
+    tentar(() => {
+      const linhas = leColagem(rascunhoCol);
+      if (!linhas.length) throw new Error('Nada para importar: cole as linhas do Excel.');
+      previaCol = linhas; renderModal();
+      toastNE(linhas.length + ' linha(s) lidas. Confira e grave.');
+    });
+  }
+  function gravarColagem() {
+    tentar(() => {
+      if (!previaCol) throw new Error('Confira a prévia antes de gravar.');
+      const site = val('neC_site') || null, dt = val('neC_dt') || hoje();
+      previaCol.forEach(l => salvaMaterial(Object.assign({}, l, { site_id: site, requested_on: dt, status: 'rascunho' })));
+      const n = previaCol.length;
+      rascunhoCol = ''; previaCol = null;
+      fechaModal(); render();
+      toastNE(n + ' material(is) importados.');
+    });
+  }
+
+  /* ── exportação ── */
+  function exportar() {
+    const linhas = tela === 'records' ? filtradas() : todas();
+    if (!linhas.length) { toastNE('Não há nada para exportar.', true); return; }
+    const blob = new Blob([paraCsv(linhas)], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'notas-e-entregas-' + hoje() + '.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toastNE(linhas.length + ' linha(s) exportadas.');
+  }
+
+  /* ── sites ── */
+  function novoSite() { abreModal('site', { row: {} }); }
+  function renomearSite(id) { abreModal('site', { row: Object.assign({}, siteDe(id)) }); }
+  function salvarSite(id) {
+    tentar(() => {
+      const nome = val('neS_nome').trim();
+      if (!nome) throw new Error('Informe o nome do site.');
+      if (sites.some(x => x.id !== id && chaveBusca(x.name) === chaveBusca(nome))) throw new Error('Já existe um site com esse nome.');
+      const dados = { name: nome, center_code: val('neS_centro').trim(), region: val('neS_regiao').trim(), carrier_info: val('neS_obs').trim() };
+      if (id) { Object.assign(siteDe(id), dados); logar('sites', id, 'update', nome); }
+      else { sites.push(Object.assign({ id: uid(), created_at: agora() }, dados)); logar('sites', '', 'insert', nome); }
+      gravaSites(); fechaModal(); render(); toastNE('Site salvo.');
+    });
+  }
+  function excluirSite(id) {
+    tentar(() => {
+      if (mats.some(m => m.site_id === id)) throw new Error('Site possui materiais vinculados.');
+      const s = siteDe(id);
+      if (!confirm('Excluir o site "' + ((s && s.name) || '') + '"?')) return;
+      sites = sites.filter(x => x.id !== id);
+      logar('sites', id, 'delete', (s && s.name) || '');
+      gravaSites(); render(); toastNE('Site excluído.');
+    });
+  }
+
+  function confirmaTexto() {
+    const d = modal.dados, v = val('neT_val').trim();
+    tentar(() => {
+      if (!v) throw new Error('Digite um nome.');
+      if (d.acao === 'novoBloco') salvaBloco({ name: v });
+      else if (d.acao === 'renomeaBloco') salvaBloco({ id: d.id, name: v });
+
+      fechaModal(); render(); toastNE('Salvo.');
+    });
+  }
+
+  function limpaHist() {
+    if (!confirm('Apagar o histórico de movimentações?\n\nOs materiais, blocos e notas continuam.')) return;
+    hist = []; gravaHist(); render(); toastNE('Histórico limpo.');
+  }
+
+  function zerar() {
+    if (!confirm('Apagar TUDO do módulo Notas e Entregas?\n\nMateriais, blocos, notas fiscais e histórico. Os outros módulos não são tocados.')) return;
+    if (!confirm('Tem certeza? Isso não pode ser desfeito.')) return;
+    mats = []; blocos = []; notas = []; vincs = []; hist = [];
+    gravaMats(); gravaBlocos(); gravaNotas(); gravaHist();
+    render(); toastNE('Módulo zerado.');
+  }
+
+  /* recarrega do armazenamento quando o Firebase traz novidade de outra pessoa */
+  function recarregar() { carregar(); if (raiz) render(); }
+
+  return {
+    mount, render, recarregar, ir, pagina,
+    setFiltro, limpaFiltros, setOrdem, marcar, marcarTodos, limpaSel,
+    setBuscaBloco, setFiltroBloco, setLookup, limpaLookup,
+    novoMaterial, editarMaterial, salvarMaterial, excluirMaterial, excluirSelecionados,
+    statusSelecionados, moverSelecionados,
+    agrupar, novoBloco, renomearBloco, excluirBloco, statusBloco, pedirBloco, notaDoBloco, tirarDoBloco,
+    novaNota, editarNota, salvarNota, excluirNota, concluirNota, setBuscaNota, marcaNota, copiar,
+    abrirColagem, setColagem, previaColagem, gravarColagem,
+    exportar, novoSite, renomearSite, salvarSite, excluirSite, confirmaTexto, limpaHist, zerar,
+    recalcula, carregaBloco, copiarFormsSap, filtraPor,
+    fechaModal
+  };
+})();
+
+</script>
 </body>
 </html>
