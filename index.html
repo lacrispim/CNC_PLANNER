@@ -4310,21 +4310,32 @@ window.__apontFabricaDe = __apontFabricaDe;
 
 function __apontPadrao(ref, maq, qtd){
   try {
-    if (typeof dwLib === 'undefined' || !Array.isArray(dwLib)) return null;
     const nk = __apontNormRef;
-    const d = dwLib.find(x => nk(x.req) === nk(ref));
-    if (!d) return null;
-    if (typeof _dwNorm === 'function') _dwNorm(d);
-    const qCad = parseInt(d.qtd, 10) || 1;
+    /* O tempo que o planejador definiu na Carteira do mês vale mais que o
+       padrão da Biblioteca — é alguém que conhece a peça dizendo o tempo.
+       Máquina por máquina: se só o torno foi definido, o centro continua
+       vindo da Biblioteca.                                               */
+    let ov = null;
+    try { ov = window.ctTempoDe ? window.ctTempoDe(ref) : null; } catch (e) {}
+
+    const d = (typeof dwLib !== 'undefined' && Array.isArray(dwLib))
+      ? dwLib.find(x => nk(x.req) === nk(ref)) : null;
+    if (!d && !ov) return null;
+    if (d && typeof _dwNorm === 'function') _dwNorm(d);
+
+    const qCad = d ? (parseInt(d.qtd, 10) || 1) : 1;
     const q = Math.max(parseInt(qtd, 10) || qCad, 1);
-    const cT = Number(d.cicloTorno)  || (d.tTorno  ? (d.tTorno  / qCad) : 0);
-    const cC = Number(d.cicloCentro) || (d.tCentro ? (d.tCentro / qCad) : 0);
+    const cT = d ? (Number(d.cicloTorno)  || (d.tTorno  ? (d.tTorno  / qCad) : 0)) : 0;
+    const cC = d ? (Number(d.cicloCentro) || (d.tCentro ? (d.tCentro / qCad) : 0)) : 0;
     /* O tempo de MÁQUINA é ciclo × lote + setup. A programação (CAM) é feita
        por outro técnico, fora da máquina, e tem a própria raia no planejamento
        — somá-la aqui cobraria do operador um tempo que não é dele. */
-    const t = Math.round(cT * q + (d.setupTorno || 0));
-    const c = Math.round(cC * q + (d.setupCentro || 0));
-    const pg = Math.round((d.progTorno || 0) + (d.progCentro || 0));
+    let t = d ? Math.round(cT * q + (d.setupTorno || 0)) : 0;
+    let c = d ? Math.round(cC * q + (d.setupCentro || 0)) : 0;
+    if (ov && (ov.cT != null || ov.sT != null)) t = Math.round((ov.sT || 0) + (ov.cT || 0) * q);
+    if (ov && (ov.cC != null || ov.sC != null)) c = Math.round((ov.sC || 0) + (ov.cC || 0) * q);
+
+    const pg = d ? Math.round((d.progTorno || 0) + (d.progCentro || 0)) : 0;
     if (maq === 'TORNO')  return t > 0 ? t : null;
     if (maq === 'CENTRO') return c > 0 ? c : null;
     if (maq === 'PROG')   return pg > 0 ? pg : null;
@@ -4332,6 +4343,25 @@ function __apontPadrao(ref, maq, qtd){
   } catch (e) { return null; }
 }
 window.__apontPadrao = __apontPadrao;
+
+/* O padrão aberto: ciclo por peça e setup de cada máquina, do jeito que a
+   Biblioteca guarda. Serve de referência nos campos de tempo da carteira. */
+function __apontPadraoDet(ref){
+  try {
+    if (typeof dwLib === 'undefined' || !Array.isArray(dwLib)) return null;
+    const d = dwLib.find(x => __apontNormRef(x.req) === __apontNormRef(ref));
+    if (!d) return null;
+    if (typeof _dwNorm === 'function') _dwNorm(d);
+    const qCad = parseInt(d.qtd, 10) || 1;
+    return {
+      cT: Number(d.cicloTorno)  || (d.tTorno  ? d.tTorno  / qCad : 0),
+      cC: Number(d.cicloCentro) || (d.tCentro ? d.tCentro / qCad : 0),
+      sT: Number(d.setupTorno)  || 0,
+      sC: Number(d.setupCentro) || 0
+    };
+  } catch (e) { return null; }
+}
+window.__apontPadraoDet = __apontPadraoDet;
 
 /* Busca das requisições na programação: casa com o nº (com ou sem #),
    com o nome da peça e com o site. Sem texto, não filtra nada. */
@@ -14817,7 +14847,8 @@ const FB_KEY_MAP = {
   'cnc_ne_vinculos_v1':   '/ne_vinculos',
   'cnc_ne_sites_v1':      '/ne_sites',
   'cnc_ne_hist_v1':       '/ne_hist',
-  'cnc_carteira_v1':      '/carteira_mes'
+  'cnc_carteira_v1':      '/carteira_mes',
+  'cnc_tempos_v1':        '/tempos_peca'
 };
 
 
@@ -25987,7 +26018,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 10/11/2026 09:54</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 10/11/2026 10:53</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
@@ -27684,6 +27715,9 @@ window.MNE = (function () {
 .ct-fab-rodape{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;
   font-size:10.5px;color:var(--tx2);margin-top:9px;border-top:1px solid var(--border2);padding-top:8px}
 .ct-regua span{color:inherit}
+.ct-semfab{font-size:11px;line-height:1.6;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;
+  border-radius:8px;padding:9px 11px;margin-bottom:10px}
+body.tema-escuro .ct-semfab{color:#FCD34D;background:#78350f33;border-color:#92400e}
 #carteiraView p{margin:0;color:var(--tx2);font-size:12.5px;max-width:720px;line-height:1.6}
 #carteiraView button{font:inherit;cursor:pointer;border:0}
 #carteiraView input,#carteiraView select{font:inherit;background:var(--surface);color:var(--tx);
@@ -27741,6 +27775,27 @@ window.MNE = (function () {
 .ct-item-peca{font-size:12px;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ct-item-sub{font-size:10.5px;color:var(--tx2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ct-item-min{font-size:11.5px;font-weight:700;color:var(--tx2);white-space:nowrap;flex-shrink:0}
+.ct-tempos{flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:3px;
+  padding-left:10px;border-left:1px solid var(--border2)}
+.ct-tmp-tab{border-collapse:collapse}
+.ct-tmp-tab th{font-size:9px;font-weight:700;color:var(--tx3);text-transform:uppercase;
+  letter-spacing:.4px;padding:0 4px 2px;text-align:center}
+.ct-tmp-tab tr>th:first-child{text-align:right;padding-right:6px;text-transform:none;letter-spacing:0;font-size:9.5px}
+.ct-tmp-tab td{padding:1px 2px}
+input.ct-min-inp{width:46px;padding:3px 5px;font-size:11px;font-weight:700;text-align:right;
+  border:1px solid var(--border2);border-radius:6px;background:var(--surface);color:var(--tx);
+  outline:none;font-family:inherit;-moz-appearance:textfield}
+input.ct-min-inp::-webkit-outer-spin-button,
+input.ct-min-inp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+input.ct-min-inp:focus{border-color:#22D3EE}
+input.ct-min-inp::placeholder{color:var(--tx3);font-weight:500}
+input.ct-min-inp.ct-min-on{border-color:#22D3EE;color:#0E7490;background:rgba(34,211,238,.07)}
+body.tema-escuro input.ct-min-inp.ct-min-on{color:#67E8F9}
+.ct-tmp-pe{display:flex;align-items:center;gap:8px;font-size:11.5px;font-weight:800;color:var(--tx2);
+  margin-top:2px}
+.ct-min-man .ct-tmp-pe>b{color:#0E7490}
+body.tema-escuro .ct-min-man .ct-tmp-pe>b{color:#67E8F9}
+.ct-tmp-pe .ct-link{font-size:10px}
 .ct-ruim{color:#F87171}
 .ct-maq{font-size:9.5px;font-weight:800;padding:2px 6px;border-radius:5px;white-space:nowrap}
 .ct-maq-t{background:rgba(96,165,250,.16);color:#60A5FA}
@@ -27923,9 +27978,34 @@ function ctLinhas() {
       const qtBruta = parseInt(r.qt, 10) || 0;
       const qt = qtBruta > 0 && qtBruta <= 500 ? qtBruta : null;     // ignora quantidade digitada errada
       const pT = pad(r.id, 'TORNO', qt), pC = pad(r.id, 'CENTRO', qt);
+      const pcs = Math.max(1, parseInt(qt, 10) || 1);
+
+      /* O padrão da Biblioteca, aberto em ciclo e setup — é o que aparece
+         de referência (cinza) nos quatro campos da linha.                */
+      let det = null;
+      try { det = window.__apontPadraoDet ? window.__apontPadraoDet(r.id) : null; } catch (e) {}
+      const ref = {
+        cT: det && det.cT ? Math.round(det.cT * 10) / 10 : null,
+        cC: det && det.cC ? Math.round(det.cC * 10) / 10 : null,
+        sT: det && det.sT ? Math.round(det.sT) : null,
+        sC: det && det.sC ? Math.round(det.sC) : null
+      };
+
+      /* O que você digitou substitui o padrão, máquina por máquina: mexeu
+         no torno, o torno passa a ser seu e o centro continua no padrão. */
+      const ov = ctTempoDe(r.id) || null;
+      const temT = ov && (ov.cT != null || ov.sT != null);
+      const temC = ov && (ov.cC != null || ov.sC != null);
+      let tT = pT || 0, tC = pC || 0;
+      if (temT) tT = Math.round((ov.sT || 0) + (ov.cT || 0) * pcs);
+      if (temC) tC = Math.round((ov.sC || 0) + (ov.cC || 0) * pcs);
 
       let maq = '', porque = '';
-      if (h.TORNO && h.CENTRO) { maq = 'AMBAS'; porque = 'já passou nas duas'; }
+      if (temT || temC) {
+        maq = (tT > 0 && tC > 0) ? 'AMBAS' : tT > 0 ? 'TORNO' : tC > 0 ? 'CENTRO' : '';
+        porque = 'tempo definido por você';
+      }
+      else if (h.TORNO && h.CENTRO) { maq = 'AMBAS'; porque = 'já passou nas duas'; }
       else if (h.TORNO) { maq = 'TORNO'; porque = 'apontada no torno'; }
       else if (h.CENTRO) { maq = 'CENTRO'; porque = 'apontada no centro'; }
       else if (pT && pC) { maq = 'AMBAS'; porque = 'padrão nas duas'; }
@@ -27933,16 +28013,100 @@ function ctLinhas() {
       else if (pC) { maq = 'CENTRO'; porque = 'padrão de centro'; }
       else { porque = 'sem histórico nem padrão'; }
 
-      const min = (pT || 0) + (pC || 0);
+      const min = tT + tC;
       return {
-        id: String(r.id), peca: r.p || '', fab: r.pl || '(sem fábrica)', qt: qt, qtBruta: qtBruta,
+        tmp: ov || {}, ref: ref, pcs: pcs, manual: !!(temT || temC),
+        manT: !!temT, manC: !!temC,
+        id: String(r.id), formsRef: String(r.formsRef || ''), peca: r.p || '', fab: ctFab(r), qt: qt, qtBruta: qtBruta,
         aberto: ctIso(r.dt), idade: ctDias(r.dt), cheg: cheg, parado: cheg ? ctDias(cheg) : null,
         pronto: !!cheg, temCompra: (() => { try { return (window.__comprasDoForm(r) || []).length > 0; } catch (e) { return false; } })(),
-        maq: maq, porque: porque, minT: pT || 0, minC: pC || 0,
+        maq: maq, porque: porque, minT: tT, minC: tC,
         min: min || null, estimado: !min
       };
     });
 }
+
+/* A planta da solicitação. Quase sempre é o campo Planta do forms; quando
+   ele vem vazio, ainda dá para achar pelo forms de origem ou pela
+   Biblioteca. Não achou, devolve vazio — e aí o item fica de fora do
+   rateio de horas, porque não existe fábrica "sem fábrica" para dar horas. */
+const CT_FABRICAS = ['Aguaí', 'Garanhuns', 'Igarassu', 'Indaiatuba',
+                     'Pouso Alegre', 'Suape', 'Valinhos', 'Vinhedo'];
+function ctFab(r) {
+  let f = String(r && r.pl || '').trim();
+  if (!f && window.__apontFabricaDe) { try { f = String(__apontFabricaDe(r.id, '') || '').trim(); } catch (e) {} }
+  if (!f) return '';
+  const certo = CT_FABRICAS.find(x => x.toLowerCase() === f.toLowerCase()
+    || x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+       === f.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase());
+  return certo || f;
+}
+/* As fábricas de uma lista de itens — só as que existem de verdade. */
+function ctFabsDe(linhas) {
+  return [...new Set(linhas.map(l => l.fab).filter(Boolean))].sort();
+}
+window.ctFab = ctFab;
+
+/* ── Tempo de fabricação definido pelo planejador ──────────────────
+   A Biblioteca dá um padrão, mas quem conhece a peça às vezes sabe que
+   ele está errado. Aqui fica o minuto por peça que o planejador digitou,
+   por forms. Vale para todos os meses, porque é a peça que leva aquele
+   tempo, não o mês. Em branco, volta a valer o padrão da Biblioteca.   */
+const CT_TEMPOS_KEY = 'cnc_tempos_v1';
+/* Lido uma vez por rodada de desenho: ctLinhas consulta isto uma vez por
+   solicitação, e abrir o localStorage 1500 vezes travaria a tela.      */
+let _ctTmpCache = null, _ctTmpAte = 0;
+function ctTempos() {
+  const agora = Date.now();
+  if (_ctTmpCache && agora < _ctTmpAte) return _ctTmpCache;
+  let o = {};
+  try { const p = JSON.parse(localStorage.getItem(CT_TEMPOS_KEY) || '{}'); if (p && typeof p === 'object') o = p; }
+  catch (e) {}
+  _ctTmpCache = o; _ctTmpAte = agora + 250;
+  return o;
+}
+function ctTemposMudou() { _ctTmpCache = null; _ctTmpAte = 0; }
+window.addEventListener('storage', e => { if (!e || e.key === CT_TEMPOS_KEY) ctTemposMudou(); });
+/* Quatro números por forms: ciclo e setup de cada máquina.
+   cT/cC são minutos POR PEÇA; sT/sC são minutos UMA VEZ, por lote.
+   Campo em branco não existe na gravação — ali vale o padrão.          */
+const CT_TEMPO_CAMPOS = ['cT', 'cC', 'sT', 'sC'];
+function ctTempoDe(id) {
+  const v = ctTempos()[String(id)];
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return { cT: v };            // formato antigo: só o ciclo de torno
+  if (typeof v !== 'object') return null;
+  const out = {};
+  CT_TEMPO_CAMPOS.forEach(k => { if (v[k] != null && v[k] !== '') out[k] = Number(v[k]); });
+  return Object.keys(out).length ? out : null;
+}
+function ctSetTempo(id, campo, val) {
+  if (CT_TEMPO_CAMPOS.indexOf(campo) < 0) return;
+  const t = ctTempos();
+  const k = String(id);
+  const atual = ctTempoDe(k) || {};
+  const n = String(val == null ? '' : val).trim().replace(',', '.');
+  if (n === '') delete atual[campo];
+  else {
+    const v = parseFloat(n);
+    if (!Number.isFinite(v) || v < 0) return;
+    atual[campo] = Math.round(v * 100) / 100;
+  }
+  if (Object.keys(atual).length) t[k] = atual; else delete t[k];
+  try { localStorage.setItem(CT_TEMPOS_KEY, JSON.stringify(t)); } catch (e) {}
+  ctTemposMudou();
+  carteiraRender();
+}
+/* Limpa os quatro de uma vez. */
+function ctLimpaTempo(id) {
+  const t = ctTempos(); delete t[String(id)];
+  try { localStorage.setItem(CT_TEMPOS_KEY, JSON.stringify(t)); } catch (e) {}
+  ctTemposMudou();
+  carteiraRender();
+}
+window.ctSetTempo = ctSetTempo;
+window.ctTempoDe = ctTempoDe;
+window.ctLimpaTempo = ctLimpaTempo;
 
 /* Minutos que o item consome em cada máquina. */
 function ctConsumo(l) {
@@ -27959,7 +28123,7 @@ function ctSugere(mes, prontos) {
      continua tentando as outras, porque um item de centro ainda cabe
      quando o torno já encheu. */
   const porFab = {};
-  prontos.forEach(l => (porFab[l.fab] = porFab[l.fab] || []).push(l));
+  prontos.forEach(l => { if (l.fab) (porFab[l.fab] = porFab[l.fab] || []).push(l); });
   Object.keys(porFab).forEach(f => porFab[f].sort((a, b) => (b.idade || 0) - (a.idade || 0)));
 
   /* A volta começa pela fábrica que está esperando há mais tempo. */
@@ -28006,7 +28170,15 @@ function ctSugere(mes, prontos) {
 
 const ctEsc = v => String(v == null ? '' : v)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const ctH = m => (m / 60).toFixed(0) + ' h';
+/* Minutos em texto curto: abaixo de uma hora mostra os minutos, senão as
+   horas — "0 h" para um serviço de 9 min não ajuda ninguém. */
+const ctH = m => {
+  const n = Math.round(Number(m) || 0);
+  if (n <= 0) return '0 h';
+  if (n < 60) return n + ' min';
+  if (n < 600) return (Math.round(n / 6) / 10).toFixed(1).replace('.', ',') + ' h';
+  return (n / 60).toFixed(0) + ' h';
+};
 const ctMesNome = m => {
   const [a, mm] = String(m).split('-');
   const N = ['', 'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho',
@@ -28041,7 +28213,7 @@ function carteiraRender() {
     && (!ctFabrica || l.fab === ctFabrica)
     && (!ctSoSemPadrao || l.estimado));
 
-  const fabs = [...new Set(todas.map(l => l.fab))].sort();
+  const fabs = ctFabsDe(todas);
   const cap = ctCap(ctMes);
 
   el.innerHTML =
@@ -28068,6 +28240,7 @@ function ctCabecalho(todas, prontos, travados, carteira) {
     + '<div class="ct-head-acoes">'
     +   '<input type="month" value="' + ctEsc(ctMes) + '" onchange="ctTrocaMes(this.value)">'
     +   '<button class="ct-btn ct-btn-sec" onclick="ctSugerir()">✨ Sugerir carteira</button>'
+    +   '<button class="ct-btn ct-btn-sec" onclick="ctParaProgramacao()">▶ Mandar para a programação</button>'
     +   '<button class="ct-btn" onclick="ctExportar()">⬇ Gerar planilha do mês</button>'
     + '</div></div>'
     + '<div class="ct-kpis">'
@@ -28115,7 +28288,7 @@ function ctPainelCapacidade(cap, usoT, capT, usoC, capC, n, estim) {
 function ctPainelHorasFab() {
   const todas = ctLinhas();
   const naCart = new Set(ctDoMes(ctMes).refs || []);
-  const fabs = [...new Set(todas.filter(l => l.pronto).map(l => l.fab))].sort();
+  const fabs = ctFabsDe(todas.filter(l => l.pronto));
   if (!fabs.length) return '';
   const cota = ctHorasFab(ctMes, fabs);
   const uso = {};
@@ -28128,7 +28301,14 @@ function ctPainelHorasFab() {
   const somaCota = fabs.reduce((a, f) => a + (cota[f] || 0), 0);
   const somaUso = Object.keys(uso).reduce((a, f) => a + uso[f], 0) / 60;
 
+  const semFab = todas.filter(l => l.pronto && !l.fab);
   return '<div class="ct-sep">Horas por fábrica no mês</div>'
+    + (semFab.length
+        ? '<div class="ct-semfab">⚠ <b>' + semFab.length + ' forms</b> sem planta no cadastro ('
+          + semFab.slice(0, 6).map(l => ctEsc(l.id)).join(', ')
+          + (semFab.length > 6 ? ' e mais ' + (semFab.length - 6) : '')
+          + '). Eles não entram no rateio nem na sugestão — abra cada um e preencha a <b>Planta</b>.</div>'
+        : '')
     + '<div class="ct-fabs">'
     + fabs.map(f => {
         const h = cota[f] || 0, u = uso[f] / 60;
@@ -28182,7 +28362,36 @@ function ctLinhaHtml(l, naCarteira) {
     +     ' · ' + ctEsc(l.porque)
     +   '</div>'
     + '</div>'
-    + '<div class="ct-item-min">' + tempo + '</div></div>';
+    + ctTemposHtml(l, tempo) + '</div>';
+}
+
+/* Os quatro tempos da peça, editáveis na própria linha.
+   ciclo = minutos POR PEÇA · setup = minutos UMA VEZ no lote.
+   Campo vazio mostra em cinza o que a Biblioteca diz e é ela que vale. */
+function ctTemposHtml(l, tempo) {
+  const cam = (k, passo) => {
+    const v = l.tmp[k];
+    const p = l.ref[k];
+    return '<input type="number" min="0" step="' + passo + '" class="ct-min-inp'
+      + (v != null ? ' ct-min-on' : '') + '"'
+      + ' value="' + (v != null ? v : '') + '"'
+      + ' placeholder="' + (p != null ? p : '—') + '"'
+      + ' onchange="ctSetTempo(\'' + ctEsc(l.id) + '\', \'' + k + '\', this.value)"'
+      + ' onclick="event.stopPropagation()">';
+  };
+  const det = 'Torno: ' + (l.minT ? ctH(l.minT) : '—') + ' · Centro: ' + (l.minC ? ctH(l.minC) : '—')
+    + ' — para ' + l.pcs + ' pç.'
+    + (l.manual ? ' Tempo definido por você; apague os campos para voltar ao padrão.' : '');
+  return '<div class="ct-tempos' + (l.manual ? ' ct-min-man' : '') + '" title="' + ctEsc(det) + '">'
+    + '<table class="ct-tmp-tab">'
+    +   '<tr><td></td><th>torno</th><th>centro</th></tr>'
+    +   '<tr><th>ciclo</th><td>' + cam('cT', '0.5') + '</td><td>' + cam('cC', '0.5') + '</td></tr>'
+    +   '<tr><th>setup</th><td>' + cam('sT', '5') + '</td><td>' + cam('sC', '5') + '</td></tr>'
+    + '</table>'
+    + '<div class="ct-tmp-pe"><b>' + tempo + '</b>'
+    +   (l.manual ? '<button class="ct-link" onclick="event.stopPropagation();ctLimpaTempo(\''
+        + ctEsc(l.id) + '\')" title="Voltar ao padrão da Biblioteca">padrão</button>' : '')
+    + '</div></div>';
 }
 
 function ctPainelCarteira(carteira, usoT, usoC) {
@@ -28303,7 +28512,7 @@ function ctSetCap() {
 function ctSetHoraFab(inp) {
   const f = inp.getAttribute('data-fab');
   const todas = ctLinhas();
-  const fabs = [...new Set(todas.filter(l => l.pronto).map(l => l.fab))].sort();
+  const fabs = ctFabsDe(todas.filter(l => l.pronto));
   const h = ctHorasFab(ctMes, fabs);
   h[f] = Math.max(0, parseInt(inp.value, 10) || 0);
   ctSalvaHorasFab(ctMes, h);
@@ -28314,7 +28523,7 @@ function ctSetHoraFab(inp) {
    proporção do tamanho da fila de cada uma. */
 function ctDistribui(modo) {
   const todas = ctLinhas().filter(l => l.pronto);
-  const fabs = [...new Set(todas.map(l => l.fab))].sort();
+  const fabs = ctFabsDe(todas);
   if (!fabs.length) return;
   const totalH = (ctCapMaq(ctMes, 'TORNO') + ctCapMaq(ctMes, 'CENTRO')) / 60;
   const h = {};
@@ -28357,7 +28566,7 @@ function ctMontaSugestao(todas, prontos) {
   ctSalvaMes(ctMes, d);
   carteiraRender();
   const sel = new Set(escolhidos);
-  const todasFabs = [...new Set(prontos.map(l => l.fab))].sort();
+  const todasFabs = ctFabsDe(prontos);
   const cota = ctHorasFab(ctMes, todasFabs);
   const linha = f => {
     const meus = todas.filter(l => sel.has(l.id) && l.fab === f);
@@ -28374,6 +28583,100 @@ function ctMontaSugestao(todas, prontos) {
     + '</table>'
     + 'Ajuste no <b>+</b> e no <b>−</b> e depois gere a planilha do mês.');
 }
+
+/* ── Da carteira para a programação ──────────────────────────────
+   A programação trabalha com uma lista de requisições; é de lá que o
+   planejador arrasta a peça para o dia, o turno e a máquina. Até agora
+   essa lista vinha com um tempo chutado por fórmula. Quem tem tempo de
+   execução definido entra com o tempo de verdade, aberto por máquina,
+   e já aparece pronta para cair na raia.                             */
+const CT_PROG_KEY = 'apont_prog_manual_v1';
+function ctProgEstado() {
+  try { const o = JSON.parse(localStorage.getItem(CT_PROG_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; }
+  catch (e) { return {}; }
+}
+/* O que está na carteira e já tem tempo para ir. */
+function ctProgCandidatos() {
+  const naCart = new Set(ctDoMes(ctMes).refs || []);
+  const linhas = ctLinhas().filter(l => naCart.has(l.id));
+  return { comTempo: linhas.filter(l => !l.estimado), chute: linhas.filter(l => l.estimado) };
+}
+function ctParaProgramacao() {
+  const { comTempo, chute } = ctProgCandidatos();
+  if (!comTempo.length && !chute.length) {
+    ctAviso('Carteira vazia', 'Não há nada em <b>' + ctEsc(ctMesNome(ctMes)) + '</b> para mandar. '
+      + 'Use <b>✨ Sugerir carteira</b> ou marque forms no <b>+</b>.');
+    return;
+  }
+  const st = ctProgEstado();
+  const nk = x => (window.__apontNormRef ? window.__apontNormRef(x) : String(x || '').trim().toUpperCase());
+  const ja = new Set((st.reqs || []).map(r => nk(r.ref)));
+  const novos = comTempo.filter(l => !ja.has(nk(l.id))).length;
+  ctDialogo('Mandar para a programação',
+    '<b>' + comTempo.length + ' forms</b> da carteira de ' + ctEsc(ctMesNome(ctMes))
+    + ' têm tempo de execução e vão para a lista de requisições da <b>Programação</b>, '
+    + 'com os minutos abertos em torno e centro. Lá você arrasta cada um para o dia, o turno e a máquina.'
+    + '<div style="margin-top:10px;color:var(--txt3);font-size:11.5px;line-height:1.6">'
+    + novos + ' entram como novos · ' + (comTempo.length - novos) + ' já estão lá e só têm o tempo atualizado.'
+    + '</div>'
+    + (chute.length
+        ? '<div style="border-top:1px solid var(--border2);margin-top:12px;padding-top:11px">'
+          + '<label style="display:flex;gap:9px;align-items:center;cursor:pointer">'
+          + '<input type="checkbox" id="pgChute" style="width:15px;height:15px;accent-color:#0E7490">'
+          + '<span>levar também os ' + chute.length + ' sem tempo definido (vão com a estimativa de '
+          + ctH(CT_MIN_PADRAO) + ')</span></label></div>'
+        : ''),
+    '<button class="ct-btn ct-btn-sec" onclick="ctFechaDlg()">Cancelar</button>'
+    + '<button class="ct-btn" onclick="ctEnviaProg()">Mandar ' + comTempo.length + '</button>');
+}
+function ctEnviaProg() {
+  const inclui = (document.getElementById('pgChute') || {}).checked;
+  ctFechaDlg();
+  const { comTempo, chute } = ctProgCandidatos();
+  const linhas = inclui ? comTempo.concat(chute) : comTempo;
+  if (!linhas.length) return;
+
+  const nk = x => (window.__apontNormRef ? window.__apontNormRef(x) : String(x || '').trim().toUpperCase());
+  const st = ctProgEstado();
+  const reqs = Array.isArray(st.reqs) ? st.reqs.slice() : [];
+  const onde = {};
+  reqs.forEach((r, i) => { onde[nk(r.ref)] = i; });
+
+  const add = [];
+  let novos = 0, atualizados = 0;
+  linhas.forEach(l => {
+    const c = ctConsumo(l);
+    const base = {
+      ref: String(l.id), peca: l.peca || '', qtd: l.qt || 0, site: l.fab || '',
+      status: 'CARTEIRA', origem: 'carteira',
+      torno: Math.round(c.TORNO) || 0, centro: Math.round(c.CENTRO) || 0
+    };
+    /* A programação pode já ter esse forms com o nº de origem (a lista
+       antiga usava formsRef). Casa pelos dois para não duplicar.       */
+    let i = onde[nk(l.id)];
+    if (i == null && l.formsRef) i = onde[nk(l.formsRef)];
+    /* Já estava na lista? Atualiza o tempo e deixa o resto como o
+       planejador deixou — principalmente as operações por peça.      */
+    if (i != null) { reqs[i] = Object.assign({}, reqs[i], base, { ops: reqs[i].ops || 0 }); atualizados++; }
+    else { add.push(Object.assign({ ops: 0 }, base)); novos++; }
+  });
+
+  st.reqs = add.concat(reqs);
+  try { localStorage.setItem(CT_PROG_KEY, JSON.stringify(st)); }
+  catch (e) { ctAviso('Não consegui gravar', 'A lista da programação não pôde ser salva: ' + (e.message || e)); return; }
+  window.dispatchEvent(new Event('apont-prog-remoto'));
+  if (window.__apontOpsLimpaCache) { try { window.__apontOpsLimpaCache(); } catch (e) {} }
+
+  ctAviso('✓ Na fila da programação',
+    '<table class="ct-dlg-tab">'
+    + '<tr><td>Entraram agora</td><td><b>' + novos + '</b></td></tr>'
+    + (atualizados ? '<tr><td>Tempo atualizado</td><td><b>' + atualizados + '</b></td></tr>' : '')
+    + '</table>'
+    + 'Abra <b>Apontamento → Programação</b>: eles estão na lista de requisições, '
+    + 'com o tempo de torno e de centro já preenchido. Arraste cada um para o dia, o turno e a máquina.');
+}
+window.ctParaProgramacao = ctParaProgramacao;
+window.ctEnviaProg = ctEnviaProg;
 
 /* Gera a planilha já no formato que o importador do planejamento lê. */
 async function ctExportar() {
@@ -28393,9 +28696,18 @@ async function ctExportar() {
   const L = [['Data', 'Turno', 'Máquina', 'Nº', 'Peça', 'Fábrica', 'Qtd', 'Minutos planejados',
               'Peças planejadas', 'Padrão torno (min)', 'Padrão centro (min)', 'De onde veio a máquina', 'Observação']];
   linhas.forEach(l => {
-    const linha = mq => L.push(['', '', mq, l.id, l.peca, l.fab, l.qt || '', '', '',
-                                l.minT || '', l.minC || '', l.porque,
-                                l.estimado ? 'sem padrão na Biblioteca' : '']);
+    /* Quem manda é o tempo que está valendo na carteira: o seu, se você
+       digitou, senão o padrão da Biblioteca.                            */
+    const cs = ctConsumo(l);
+    const t = l.tmp || {};
+    const seu = [t.cT != null ? 'ciclo torno ' + t.cT : '', t.sT != null ? 'setup torno ' + t.sT : '',
+                 t.cC != null ? 'ciclo centro ' + t.cC : '', t.sC != null ? 'setup centro ' + t.sC : '']
+                .filter(Boolean).join(', ');
+    const linha = mq => L.push(['', '', mq, l.id, l.peca, l.fab, l.qt || '',
+                                Math.round(mq === 'Torno' ? cs.TORNO : cs.CENTRO) || '', '',
+                                Math.round(cs.TORNO) || '', Math.round(cs.CENTRO) || '', l.porque,
+                                seu ? 'tempo definido no planejamento (' + seu + ')'
+                                    : (l.estimado ? 'sem padrão na Biblioteca' : '')]);
     if (l.maq === 'AMBAS') { linha('Torno'); linha('Centro'); }
     else linha(l.maq === 'CENTRO' ? 'Centro' : l.maq === 'TORNO' ? 'Torno' : '');
   });
