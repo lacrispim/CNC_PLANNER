@@ -26096,7 +26096,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 11/11/2026 12:50</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 11/11/2026 13:21</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
@@ -27944,7 +27944,7 @@ body.tema-escuro .ct-min-man .ct-tmp-pe>b{color:#67E8F9}
 
    Aqui a fila é cortada em três:
      • PRONTOS  — material chegou. É só daqui que se monta o mês.
-     • TRAVADOS — sem compra ou sem chegada. Vira cobrança, não plano.
+     • SEM MATERIAL — dá para planejar, mas não vai para a máquina.
      • CARTEIRA — o que você escolheu para o mês, com a capacidade medida.
 
    A ordem sugerida é por RODÍZIO ENTRE AS FÁBRICAS: uma de cada vez, em
@@ -27957,8 +27957,8 @@ const CT_MIN_TURNO = 385;          // 420 do turno menos 35 de rotina fixa
 const CT_MIN_PADRAO = 120;         // estimativa para peça sem padrão na Biblioteca
 
 let ctMes = '';                    // 'aaaa-mm'
-let ctBusca = '', ctFabrica = '', ctSoSemPadrao = false, ctStatus = '';
-let ctAbaTravados = false;
+let ctBusca = '', ctFabrica = '', ctSoSemPadrao = false, ctStatus = '', ctSoComMat = false;
+
 
 /* ── armazenamento ───────────────────────────────────────────────── */
 function ctTudo() {
@@ -28373,7 +28373,7 @@ function ctSugere(mes, prontos, semMaterial) {
 /* Quanto de cada fábrica foi usado, para a tela mostrar o aproveitamento. */
 function ctOcupacao(mes, ids, todas) {
   const sel = new Set(ids);
-  const fabs = ctFabsDe(todas.filter(l => l.pronto));
+  const fabs = ctFabsDe(todas);
   const cota = ctHorasFab(mes, fabs);
   const out = {};
   fabs.forEach(f => {
@@ -28382,7 +28382,7 @@ function ctOcupacao(mes, ids, todas) {
     const teto = (cota[f] || 0) * 60;
     out[f] = { forms: meus.length, min: min, teto: teto,
                pc: teto ? Math.round(min / teto * 100) : 0,
-               sobra: todas.filter(l => l.pronto && l.fab === f && !sel.has(l.id)).length };
+               sobra: todas.filter(l => l.fab === f && !sel.has(l.id)).length };
   });
   return out;
 }
@@ -28444,8 +28444,10 @@ function carteiraRender() {
   const dados = ctDoMes(ctMes);
   const naCart = new Set(dados.refs || []);
   const carteira = todas.filter(l => naCart.has(l.id));
-  const prontos = todas.filter(l => l.pronto && !naCart.has(l.id));
-  const travados = todas.filter(l => !l.pronto && !naCart.has(l.id));
+  /* Uma lista só. Material que não chegou não esconde mais o forms —
+     vira um aviso na linha, e quem decide é o planejador.            */
+  const prontos = todas.filter(l => !naCart.has(l.id));
+  const travados = [];
 
   const capT = ctCapMaq(ctMes, 'TORNO'), capC = ctCapMaq(ctMes, 'CENTRO');
   let usoT = 0, usoC = 0, estim = 0;
@@ -28456,6 +28458,7 @@ function carteiraRender() {
   const visiveis = prontos.filter(l =>
     (!q || [l.id, l.peca, l.fab].some(v => String(v).toLowerCase().indexOf(q) >= 0))
     && (!ctStatus || l.status === ctStatus)
+    && (!ctSoComMat || l.pronto)
     && (!ctFabrica || l.fab === ctFabrica)
     && (!ctSoSemPadrao || l.estimado));
 
@@ -28469,7 +28472,6 @@ function carteiraRender() {
     +   '<div class="ct-col">'
     +     ctPainelCarteira(carteira, usoT, usoC)
     +     ctPainelProntos(visiveis, prontos, fabs)
-    +     ctPainelTravados(travados)
     +   '</div>'
     + '</div>';
 
@@ -28484,7 +28486,7 @@ function ctCabecalho(todas, prontos, travados, carteira) {
   return '<div class="ct-head">'
     + '<div><h1>Carteira do mês</h1>'
     + '<p>Escolha aqui o que a usinagem vai fazer em <b>' + ctEsc(ctMesNome(ctMes)) + '</b>. '
-    + 'Só entra o que já tem material — o resto é cobrança de compras, não planejamento.</p></div>'
+    + 'Entra tudo que não está encerrado; o que ainda espera material vem marcado.</p></div>'
     + '<div class="ct-head-acoes">'
     +   '<input type="month" value="' + ctEsc(ctMes) + '" onchange="ctTrocaMes(this.value)">'
     +   '<button class="ct-btn ct-btn-sec" onclick="ctSugerir()">✨ Sugerir carteira</button>'
@@ -28494,9 +28496,9 @@ function ctCabecalho(todas, prontos, travados, carteira) {
     +   '<button class="ct-btn" onclick="ctExportar()">⬇ Gerar planilha do mês</button>'
     + '</div></div>'
     + '<div class="ct-kpis">'
-    + kpi('Pendentes', todas.length, 'na aba Solicitações')
-    + kpi('Prontos para usinar', prontos.length + carteira.length, 'material já chegou', '#34D399')
-    + kpi('Travados', travados.length, 'sem compra ou sem chegada', '#F59E0B')
+    + kpi('Em aberto', todas.length, 'tudo menos encerrado')
+    + kpi('Com material', todas.filter(l => l.pronto).length, 'pode ir para a máquina', '#34D399')
+    + kpi('Esperando material', todas.filter(l => !l.pronto).length, 'dá para planejar, não produzir', '#F59E0B')
     + kpi('Parados há +180 dias', velhos, 'vale decidir se ainda existem', velhos ? '#F87171' : null)
     + '</div>';
 }
@@ -28538,7 +28540,7 @@ function ctPainelCapacidade(cap, usoT, capT, usoC, capC, n, estim) {
 function ctPainelHorasFab() {
   const todas = ctLinhas();
   const naCart = new Set(ctDoMes(ctMes).refs || []);
-  const fabs = ctFabsDe(todas.filter(l => l.pronto));
+  const fabs = ctFabsDe(todas);
   if (!fabs.length) return '';
   const cota = ctHorasFab(ctMes, fabs);
   const uso = {};
@@ -28551,7 +28553,7 @@ function ctPainelHorasFab() {
   const somaCota = fabs.reduce((a, f) => a + (cota[f] || 0), 0);
   const somaUso = Object.keys(uso).reduce((a, f) => a + uso[f], 0) / 60;
 
-  const semFab = todas.filter(l => l.pronto && !l.fab);
+  const semFab = todas.filter(l => !l.fab);
   return '<div class="ct-sep">Horas por fábrica no mês</div>'
     + (semFab.length
         ? '<div class="ct-semfab">⚠ <b>' + semFab.length + ' forms</b> sem planta no cadastro ('
@@ -28564,7 +28566,7 @@ function ctPainelHorasFab() {
         const h = cota[f] || 0, u = uso[f] / 60;
         const p = h ? Math.round(u / h * 100) : (u ? 999 : 0);
         const cor = p > 100 ? '#F87171' : p > 90 ? '#F59E0B' : p > 0 ? '#34D399' : 'var(--tx2)';
-        const fila = todas.filter(l => l.pronto && l.fab === f).length;
+        const fila = todas.filter(l => l.fab === f).length;
         return '<div class="ct-fab-row" title="' + ctEsc(f) + ' · ' + fila + ' prontos na fila">'
           + '<span class="ct-fab-nome">' + ctEsc(f) + '</span>'
           + '<input type="number" min="0" value="' + h + '" data-fab="' + ctEsc(f) + '" onchange="ctSetHoraFab(this)">'
@@ -28600,11 +28602,11 @@ function ctLinhaHtml(l, naCarteira) {
   const tempo = l.estimado ? '~' + ctH(c.TORNO + c.CENTRO) : ctH(c.TORNO + c.CENTRO);
   /* Quem está na carteira sem material em casa precisa gritar: é a peça
      que não pode ir para a máquina e segura o mês inteiro.             */
-  const falta = naCarteira && !l.pronto
-    ? '<span class="ct-maq ct-maq-falta" title="O material ainda não chegou — não vai para a programação">⏳ sem material</span>'
+  const falta = !l.pronto
+    ? '<span class="ct-maq ct-maq-falta" title="O material ainda não chegou — dá para planejar, mas não vai para a programação">⏳ sem material</span>'
     : '';
   return '<div class="ct-item' + (naCarteira ? ' ct-item-on' : '')
-    + (naCarteira && !l.pronto ? ' ct-item-falta' : '') + '">'
+    + (!l.pronto ? ' ct-item-falta' : '') + '">'
     + '<button class="ct-tog" title="' + (naCarteira ? 'Tirar da carteira' : 'Pôr na carteira') + '" '
     + 'onclick="ctAlterna(\'' + ctEsc(l.id) + '\')">' + (naCarteira ? '−' : '+') + '</button>'
     + '<div class="ct-item-main">'
@@ -28664,9 +28666,11 @@ function ctPainelCarteira(carteira, usoT, usoC) {
 
 function ctPainelProntos(visiveis, prontos, fabs) {
   const sts = [...new Set(prontos.map(l => l.status).filter(Boolean))].sort();
+  const comMat = prontos.filter(l => l.pronto).length;
   return '<div class="ct-painel">'
-    + '<div class="ct-sub"><h2>Prontos para usinar</h2>'
-    + '<span>' + prontos.length + ' com material em casa, fora da carteira</span></div>'
+    + '<div class="ct-sub"><h2>Solicitações fora da carteira</h2>'
+    + '<span>' + prontos.length + ' forms · <b>' + comMat + '</b> com material em casa · '
+    + (prontos.length - comMat) + ' ainda esperando</span></div>'
     + '<div class="ct-filtros">'
     +   '<input id="ctBusca" placeholder="🔎 buscar por nº, peça ou fábrica" value="' + ctEsc(ctBusca) + '"'
     +     ' autocomplete="off" oninput="ctSetBusca(this.value)">'
@@ -28677,6 +28681,8 @@ function ctPainelProntos(visiveis, prontos, fabs) {
     +     sts.map(st => '<option value="' + ctEsc(st) + '"' + (st === ctStatus ? ' selected' : '')
     +       + '>' + ctEsc(CT_ST_LBL[st] || st) + '</option>').join('')
     +   '</select>'
+    +   '<label class="ct-chk"><input type="checkbox"' + (ctSoComMat ? ' checked' : '')
+    +     ' onchange="ctSetComMat(this.checked)"> só com material</label>'
     +   '<label class="ct-chk"><input type="checkbox"' + (ctSoSemPadrao ? ' checked' : '')
     +     ' onchange="ctSetSemPadrao(this.checked)"> só os sem padrão</label>'
     + '</div>'
@@ -28686,32 +28692,6 @@ function ctPainelProntos(visiveis, prontos, fabs) {
     + '</div>';
 }
 
-function ctPainelTravados(travados) {
-  const semCompra = travados.filter(l => !l.temCompra).length;
-  return '<div class="ct-painel ct-travados">'
-    + '<div class="ct-sub"><h2>Travados — não dá para planejar</h2>'
-    + '<span>' + travados.length + ' forms · ' + semCompra + ' sem nenhuma compra registrada '
-    + '<button class="ct-link" onclick="ctAbreTravados()">' + (ctAbaTravados ? 'esconder' : 'ver lista') + '</button></span></div>'
-    + '<div class="ct-nota">Estes esperam material. Enquanto não chegar, não entram em nenhum mês — '
-    + 'a lista aqui serve para cobrar compras, não para planejar.</div>'
-    + (ctAbaTravados
-        ? '<div class="ct-lista ct-lista-alta">' + travados.map(l =>
-            '<div class="ct-item ct-item-off"><div class="ct-item-main">'
-            + '<div class="ct-item-top"><b>#' + ctEsc(l.id) + '</b>'
-            + '<span class="ct-fab">' + ctEsc(l.fab) + '</span></div>'
-            + '<div class="ct-item-peca">' + (ctEsc(l.peca) || '—') + '</div>'
-            + '<div class="ct-item-sub">' + (l.idade != null ? 'pedido há <b>' + l.idade + ' d</b>' : '')
-            + ' · ' + (l.temCompra ? 'comprado, sem data de chegada' : '<span class="ct-ruim">sem compra registrada</span>')
-            + '</div></div></div>').join('') + '</div>'
-        : '')
-    + '</div>';
-}
-
-/* ── avisos e confirmações do próprio app ────────────────────────────
-   O Chrome oferece "impedir que esta página crie caixas de diálogo
-   adicionais" depois de alguns alertas seguidos. Marcado isso, confirm()
-   passa a responder "não" sozinho e os botões ficam mudos. Então a
-   carteira não usa alert nem confirm: desenha os próprios.            */
 function ctFechaDlg() { const e = document.getElementById('ctDlg'); if (e) e.remove(); }
 function ctDialogo(titulo, corpo, botoes, largo) {
   ctFechaDlg();
@@ -28747,7 +28727,8 @@ function ctTrocaMes(m) { if (m) { ctMes = m; carteiraRender(); } }
    digitação parar, e o foco volta para onde estava.                      */
 let _ctBuscaTimer = null;
 function ctSetStatus(v) { ctStatus = v; carteiraRender(); }
-window.ctSetStatus = ctSetStatus;
+function ctSetComMat(v) { ctSoComMat = !!v; carteiraRender(); }
+window.ctSetStatus = ctSetStatus; window.ctSetComMat = ctSetComMat;
 function ctSetBusca(v) {
   ctBusca = v;
   if (_ctBuscaTimer) clearTimeout(_ctBuscaTimer);
@@ -28755,7 +28736,7 @@ function ctSetBusca(v) {
 }
 function ctSetFabrica(v) { ctFabrica = v; carteiraRender(); }
 function ctSetSemPadrao(v) { ctSoSemPadrao = v; carteiraRender(); }
-function ctAbreTravados() { ctAbaTravados = !ctAbaTravados; carteiraRender(); }
+
 
 function ctAlterna(id) {
   const d = ctDoMes(ctMes);
@@ -28785,7 +28766,7 @@ function ctSetCap() {
 function ctSetHoraFab(inp) {
   const f = inp.getAttribute('data-fab');
   const todas = ctLinhas();
-  const fabs = ctFabsDe(todas.filter(l => l.pronto));
+  const fabs = ctFabsDe(todas);
   const h = ctHorasFab(ctMes, fabs);
   h[f] = Math.max(0, parseInt(inp.value, 10) || 0);
   ctSalvaHorasFab(ctMes, h);
@@ -28795,7 +28776,7 @@ function ctSetHoraFab(inp) {
 /* Reparte a capacidade entre as fábricas: em partes iguais, ou na
    proporção do tamanho da fila de cada uma. */
 function ctDistribui(modo) {
-  const todas = ctLinhas().filter(l => l.pronto);
+  const todas = ctLinhas();
   const fabs = ctFabsDe(todas);
   if (!fabs.length) return;
   const totalH = (ctCapMaq(ctMes, 'TORNO') + ctCapMaq(ctMes, 'CENTRO')) / 60;
@@ -28818,9 +28799,9 @@ function ctSugerir() {
   const todas = ctLinhas();
   const d = ctDoMes(ctMes);
   const prontos = todas.filter(l => l.pronto);
-  if (!prontos.length) {
-    ctAviso('Nada para planejar', 'Nenhuma solicitação pendente tem material em casa. '
-      + 'Sem material chegado não há o que programar — veja a lista <b>Travados</b>.');
+  if (!todas.length) {
+    ctAviso('Nada para planejar', 'Não há solicitação aberta — só encerradas. '
+      + 'Nada a montar para ' + ctEsc(ctMesNome(ctMes)) + '.');
     return;
   }
   if ((d.refs || []).length) {
@@ -29229,7 +29210,7 @@ async function ctExportar() {
 
 window.carteiraRender = carteiraRender;
 window.ctTrocaMes = ctTrocaMes; window.ctSetBusca = ctSetBusca; window.ctSetFabrica = ctSetFabrica;
-window.ctSetSemPadrao = ctSetSemPadrao; window.ctAbreTravados = ctAbreTravados;
+window.ctSetSemPadrao = ctSetSemPadrao;
 window.ctAlterna = ctAlterna; window.ctEsvazia = ctEsvazia; window.ctSetCap = ctSetCap;
 window.ctSugerir = ctSugerir; window.ctExportar = ctExportar;
 window.ctSetHoraFab = ctSetHoraFab; window.ctDistribui = ctDistribui;
