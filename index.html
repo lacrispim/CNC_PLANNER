@@ -14626,12 +14626,47 @@ const FB = (function() {
     if (path === '/sol_new' && Array.isArray(value) && !_rawWrite) {
       return _saveSolNewMerged(value);
     }
+    _marcaPendente(path, value);
     return _setRaw(path, value);
   }
 
+  /* Impressão digital barata do que foi para o servidor. Guardar a string
+     inteira dobraria o espaço; o par tamanho+hash já distingue uma edição. */
+  const FB_ACK_KEY = 'cnc_fb_ack_v1';
+  function _digital(v) {
+    let t; try { t = JSON.stringify(v); } catch (e) { return null; }
+    if (t == null) return null;
+    let h = 5381;
+    for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0;
+    return t.length + ':' + h.toString(36);
+  }
+  /* Um caminho fica "a enviar" assim que alguém pede a gravação, e só sai
+     dessa lista quando o servidor confirmar AQUELE valor. Um navegador que
+     nunca editou nada não tem nada aqui, e continua baixando do servidor
+     como sempre. */
+  function _aEnviar() {
+    try { const o = JSON.parse(localStorage.getItem(FB_ACK_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; }
+    catch (e) { return {}; }
+  }
+  function _gravaAEnviar(a) {
+    try { Object.getPrototypeOf(localStorage).setItem.call(localStorage, FB_ACK_KEY, JSON.stringify(a)); }
+    catch (e) {}
+  }
+  function _marcaPendente(path, value) {
+    const d = _digital(value); if (!d) return;
+    const a = _aEnviar(); a[path] = d; _gravaAEnviar(a);
+  }
+  function _marcaAck(path, value) {
+    const d = _digital(value); if (!d) return;
+    const a = _aEnviar();
+    if (a[path] === d) { delete a[path]; _gravaAEnviar(a); }   // só o valor confirmado sai da fila
+  }
+  /* Tem edição daqui que ainda não chegou no servidor? */
+  function naoEnviado(path) { return _aEnviar()[path] != null; }
+
   function _setRaw(path, value) {
     _stats.writes++;
-    return db.ref(path).set(value).then(() => { markSync(); return true; }).catch(e => {
+    return db.ref(path).set(value).then(() => { markSync(); _marcaAck(path, value); return true; }).catch(e => {
       _stats.failedWrites++;
       reportError('save ' + path, e);
       return false;
@@ -14713,12 +14748,33 @@ const FB = (function() {
     return { ok: canWrite && canRead, canWrite, canRead, error };
   }
 
-  /* Save com debounce — evita escrita em massa quando o usuário digita rápido */
+  /* Save com debounce — evita escrita em massa quando o usuário digita rápido.
+     O valor fica guardado junto com o timer: sem isso, recarregar a página
+     antes do timer estourar jogava a edição fora, e o load seguinte trazia
+     de volta a versão velha do servidor. Agora o pendente é descarregado
+     antes da página sair.                                                */
   const _saveDebounced = {};
+  const _pendingSaves = {};
   function saveDebounced(path, value, delay = 800) {
+    _pendingSaves[path] = value;
+    _marcaPendente(path, value);
     if (_saveDebounced[path]) clearTimeout(_saveDebounced[path]);
-    _saveDebounced[path] = setTimeout(() => save(path, value), delay);
+    _saveDebounced[path] = setTimeout(() => _doSaveDeb(path), delay);
   }
+  function _doSaveDeb(path) {
+    if (!(path in _pendingSaves)) return;
+    const v = _pendingSaves[path];
+    delete _pendingSaves[path];
+    if (_saveDebounced[path]) { clearTimeout(_saveDebounced[path]); delete _saveDebounced[path]; }
+    save(path, v);
+  }
+  /* Manda agora tudo o que está esperando. Devolve quantos foram. */
+  function flushDebounced() {
+    const paths = Object.keys(_pendingSaves);
+    paths.forEach(_doSaveDeb);
+    return paths.length;
+  }
+  function _pendentes() { return Object.keys(_pendingSaves).length; }
 
   /* ─── Salvamento GRANULAR (uma chave por vez) ───
      Em vez de mandar /sol_mods inteiro (que pode ter MBs), manda só /sol_mods/M00002.
@@ -14767,15 +14823,19 @@ const FB = (function() {
       if (typeof toast === 'function') toast('❌ Erro ao salvar: ' + (e.code || e.message), 'error', 6000);
     });
   }
-  // Flush pendentes antes da página fechar/recarregar
-  window.addEventListener('beforeunload', () => {
-    const keys = Object.keys(_saveKeyDebounced);
-    if (keys.length === 0) return;
-    console.log('[FB] beforeunload: forçando flush de', keys.length, 'escritas pendentes');
-    keys.forEach(k => {
-      clearTimeout(_saveKeyDebounced[k]);
-      _doSaveKey(k);
-    });
+  /* Flush pendentes antes da página fechar/recarregar.
+     beforeunload sozinho não basta: no celular e ao trocar de aba ele
+     muitas vezes não dispara, e pagehide/visibilitychange disparam.    */
+  function _flushTudo(motivo) {
+    const chaves = Object.keys(_saveKeyDebounced);
+    chaves.forEach(k => { clearTimeout(_saveKeyDebounced[k]); _doSaveKey(k); });
+    const n = flushDebounced();
+    if (chaves.length || n) console.log('[FB] ' + motivo + ': descarregadas', chaves.length + n, 'escrita(s) pendente(s)');
+  }
+  window.addEventListener('beforeunload', () => _flushTudo('beforeunload'));
+  window.addEventListener('pagehide',     () => _flushTudo('pagehide'));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') _flushTudo('aba escondida');
   });
 
   /* ─── Listener em tempo real ───
@@ -14818,7 +14878,8 @@ const FB = (function() {
       .catch(e => { _stats.failedReads++; reportError('loadPath ' + path, e); return null; });
   }
 
-  return { init, save, saveRaw, saveDebounced, saveKey, listen, suppressListeners, loadAll, loadPath, setStatus,
+  return { init, save, saveRaw, saveDebounced, flushDebounced, pendentes: _pendentes, naoEnviado,
+           saveKey, listen, suppressListeners, loadAll, loadPath, setStatus,
            healthCheck, reportError,
            get db() { return db; },
            isConnected: () => connected,
@@ -23636,11 +23697,28 @@ async function fbBootstrap() {
       if (reenviar.length && FB.saveKey) reenviar.slice(0, 400).forEach((k, i) => FB.saveKey('/sol_mods', k, merged[k], 300 + i * 25));
       console.log('[FB] Baixado e mesclado: /sol_mods —', reenviar.length, 'alteração(ões) local(is) mantida(s) e reenviada(s)');
     } else if (serverVal !== null && serverVal !== undefined) {
-      // Servidor tem dados — usa eles (sobrescreve local)
-      // Bypassa o setItem interceptado pra evitar re-upload
-      const origSet = Object.getPrototypeOf(localStorage).setItem;
-      origSet.call(localStorage, lsKey, JSON.stringify(serverVal));
-      console.log('[FB] Baixado:', fbPath);
+      /* O servidor só passa por cima do que já tinha chegado nele. Se o que
+         está aqui ainda não foi confirmado — a pessoa editou e recarregou
+         antes da escrita sair —, o local é que vale, e sobe agora. Sem isso,
+         uma edição feita segundos antes do F5 voltava ao estado antigo.   */
+      let local = null;
+      if (localVal) { try { local = JSON.parse(localVal); } catch (e) { local = null; } }
+      const naoSubiu = local !== null && FB.naoEnviado && FB.naoEnviado(fbPath);
+      if (naoSubiu) {
+        console.warn('[FB] ⬆ ' + fbPath + ': alteração local ainda não confirmada — mantida e reenviada');
+        let ok = false;
+        try { ok = await FB.save(fbPath, local); } catch (e) { console.warn('[FB] erro ao reenviar', fbPath, e); }
+        /* Se nem agora subiu, o navegador está divergindo do servidor em
+           silêncio — e divergir calado é pior do que perder a edição.   */
+        if (!ok && typeof toast === 'function') {
+          toast('⚠️ Uma alteração deste navegador ainda não chegou ao servidor. Verifique a conexão.', 'error', 7000);
+        }
+      } else {
+        // Bypassa o setItem interceptado pra evitar re-upload
+        const origSet = Object.getPrototypeOf(localStorage).setItem;
+        origSet.call(localStorage, lsKey, JSON.stringify(serverVal));
+        console.log('[FB] Baixado:', fbPath);
+      }
     } else if (localVal) {
       // Servidor vazio mas local tem dados — sobe pro servidor
       try {
@@ -26018,7 +26096,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 10/11/2026 11:06</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 11/11/2026 09:09</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
@@ -28222,10 +28300,33 @@ function ctProxMes() {
   return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2);
 }
 
+/* Onde o cursor estava antes de redesenhar, e para onde ele volta. */
+function ctGuardaFoco() {
+  const a = document.activeElement;
+  if (!a || !/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return null;
+  let sel = '';
+  if (a.id) sel = '#' + a.id;
+  else if (a.getAttribute('data-fab')) sel = '[data-fab="' + a.getAttribute('data-fab').replace(/"/g, '\\"') + '"]';
+  else return null;
+  const f = { sel: sel };
+  try { f.ini = a.selectionStart; f.fim = a.selectionEnd; } catch (e) {}
+  return f;
+}
+function ctDevolveFoco(f) {
+  if (!f) return;
+  const el = document.querySelector('#carteiraView ' + f.sel);
+  if (!el) return;
+  try {
+    el.focus({ preventScroll: true });
+    if (f.ini != null && el.setSelectionRange) el.setSelectionRange(f.ini, f.fim);
+  } catch (e) { try { el.focus(); } catch (e2) {} }
+}
+
 function carteiraRender() {
   const el = document.getElementById('carteiraView');
   if (!el) return;
   if (!ctMes) ctMes = ctProxMes();
+  const _foco = ctGuardaFoco();
 
   const todas = ctLinhas();
   const dados = ctDoMes(ctMes);
@@ -28258,6 +28359,8 @@ function carteiraRender() {
     +     ctPainelTravados(travados)
     +   '</div>'
     + '</div>';
+
+  ctDevolveFoco(_foco);
 }
 
 function ctCabecalho(todas, prontos, travados, carteira) {
@@ -28445,7 +28548,8 @@ function ctPainelProntos(visiveis, prontos, fabs) {
     + '<div class="ct-sub"><h2>Prontos para usinar</h2>'
     + '<span>' + prontos.length + ' com material em casa, fora da carteira</span></div>'
     + '<div class="ct-filtros">'
-    +   '<input placeholder="🔎 buscar por nº, peça ou fábrica" value="' + ctEsc(ctBusca) + '" oninput="ctSetBusca(this.value)">'
+    +   '<input id="ctBusca" placeholder="🔎 buscar por nº, peça ou fábrica" value="' + ctEsc(ctBusca) + '"'
+    +     ' autocomplete="off" oninput="ctSetBusca(this.value)">'
     +   '<select onchange="ctSetFabrica(this.value)"><option value="">Todas as fábricas</option>'
     +     fabs.map(f => '<option value="' + ctEsc(f) + '"' + (f === ctFabrica ? ' selected' : '') + '>' + ctEsc(f) + '</option>').join('')
     +   '</select>'
@@ -28514,7 +28618,15 @@ window.ctDialogo = ctDialogo; window.ctAviso = ctAviso; window.ctConfirma = ctCo
 
 /* ── ações ───────────────────────────────────────────────────────── */
 function ctTrocaMes(m) { if (m) { ctMes = m; carteiraRender(); } }
-function ctSetBusca(v) { ctBusca = v; carteiraRender(); }
+/* Redesenhar a tela inteira a cada tecla arrancava o cursor do campo: o
+   input era destruído junto com o resto do HTML. Agora o desenho espera a
+   digitação parar, e o foco volta para onde estava.                      */
+let _ctBuscaTimer = null;
+function ctSetBusca(v) {
+  ctBusca = v;
+  if (_ctBuscaTimer) clearTimeout(_ctBuscaTimer);
+  _ctBuscaTimer = setTimeout(() => { _ctBuscaTimer = null; carteiraRender(); }, 180);
+}
 function ctSetFabrica(v) { ctFabrica = v; carteiraRender(); }
 function ctSetSemPadrao(v) { ctSoSemPadrao = v; carteiraRender(); }
 function ctAbreTravados() { ctAbaTravados = !ctAbaTravados; carteiraRender(); }
