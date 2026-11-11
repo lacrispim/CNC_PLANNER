@@ -26096,7 +26096,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 11/11/2026 09:09</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 11/11/2026 12:50</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
@@ -27851,6 +27851,22 @@ body.tema-escuro .ct-semfab{color:#FCD34D;background:#78350f33;border-color:#924
 .ct-tb .ct-tb-fab td{background:var(--surface2);font-weight:800;font-size:10px;text-transform:uppercase;
   letter-spacing:.6px;color:var(--tx2);padding:5px 8px}
 .ct-tb tfoot td{padding-top:9px;font-weight:800;border-bottom:0;color:var(--tx2)}
+.ct-st{display:inline-block;font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;
+  padding:2px 6px;border-radius:5px;margin-right:5px;vertical-align:1px;white-space:nowrap}
+.ct-st-pend{background:#f1f5f9;color:#475569;border:1px solid #cbd5e1}
+.ct-st-apr{background:#ecfeff;color:#0E7490;border:1px solid #a5f3fc}
+.ct-st-prod{background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe}
+.ct-st-rej{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca}
+body.tema-escuro .ct-st-pend{background:#1e293b;color:#cbd5e1;border-color:#475569}
+body.tema-escuro .ct-st-apr{background:#164e6333;color:#67E8F9;border-color:#0E7490}
+body.tema-escuro .ct-st-prod{background:#312e8133;color:#A5B4FC;border-color:#4338ca}
+body.tema-escuro .ct-st-rej{background:#7f1d1d33;color:#FCA5A5;border-color:#b91c1c}
+.ct-maq-falta{background:#fffbeb;color:#92400e;border:1px solid #fcd34d}
+body.tema-escuro .ct-maq-falta{background:#78350f44;color:#FCD34D;border-color:#92400e}
+.ct-item-falta{border-left:3px solid #F59E0B}
+.ct-tb-falta{font-size:9.5px;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;
+  border-radius:5px;padding:1px 5px;white-space:nowrap;font-weight:700}
+body.tema-escuro .ct-tb-falta{color:#FCD34D;background:#78350f44;border-color:#92400e}
 .ct-vers{margin-top:18px;border-top:1px solid var(--border2);padding-top:12px;font-size:11.5px}
 .ct-vers>b{display:block;margin-bottom:8px;font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--tx3)}
 .ct-vers-l{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border2);flex-wrap:wrap}
@@ -27941,7 +27957,7 @@ const CT_MIN_TURNO = 385;          // 420 do turno menos 35 de rotina fixa
 const CT_MIN_PADRAO = 120;         // estimativa para peça sem padrão na Biblioteca
 
 let ctMes = '';                    // 'aaaa-mm'
-let ctBusca = '', ctFabrica = '', ctSoSemPadrao = false;
+let ctBusca = '', ctFabrica = '', ctSoSemPadrao = false, ctStatus = '';
 let ctAbaTravados = false;
 
 /* ── armazenamento ───────────────────────────────────────────────── */
@@ -28054,6 +28070,31 @@ function ctHistorico() {
 
 /* A data em que o material chegou: o campo do forms ou, na falta dele, a
    chegada mais recente registrada na planilha de compras. */
+/* ── Quem entra na Carteira ────────────────────────────────────────
+   Tudo, menos o que já acabou. Um forms aprovado para compra, esperando
+   SAP, em fila ou em produção continua sendo trabalho a planejar — só o
+   encerrado saiu do mapa.                                            */
+function ctEncerrado(st) { return /^encerrado/i.test(String(st || '').trim()); }
+/* Rótulo curto, igual ao do resto do app. */
+const CT_ST_LBL = {
+  'Pendente': 'Pendente',
+  'Aprovação para compra': 'Aprovado',
+  'Aguardando SAP IRON': 'Aguardando SAP',
+  'Fila de produção': 'Em fila',
+  'Em Produção': 'Em produção',
+  'Rejeitado': 'Rejeitado'
+};
+const CT_ST_CLS = {
+  'Pendente': 'pend', 'Aprovação para compra': 'apr', 'Aguardando SAP IRON': 'apr',
+  'Fila de produção': 'prod', 'Em Produção': 'prod', 'Rejeitado': 'rej'
+};
+function ctStatusHtml(st) {
+  const t = String(st || '').trim();
+  if (!t || t === 'Pendente') return '';                 // o normal não precisa de selo
+  return '<span class="ct-st ct-st-' + (CT_ST_CLS[t] || 'pend') + '">'
+    + ctEsc(CT_ST_LBL[t] || t) + '</span>';
+}
+
 function ctChegada(r) {
   if (r.dcm) return String(r.dcm).slice(0, 10);
   let c = '';
@@ -28081,7 +28122,7 @@ function ctLinhas() {
   const pad = (ref, mq, qt) => { try { return window.__apontPadrao ? window.__apontPadrao(ref, mq, qt) : null; } catch (e) { return null; } };
 
   return (typeof Sol !== 'undefined' && Sol.getData ? Sol.getData() : [])
-    .filter(r => String(r.status || '') === 'Pendente')
+    .filter(r => !ctEncerrado(r.status))
     .map(r => {
       const cheg = ctChegada(r);
       const h = hist[nk(r.id)] || hist[nk(r.formsRef)] || { TORNO: 0, CENTRO: 0 };
@@ -28127,7 +28168,8 @@ function ctLinhas() {
       return {
         tmp: ov || {}, ref: ref, pcs: pcs, manual: !!(temT || temC),
         manT: !!temT, manC: !!temC,
-        id: String(r.id), formsRef: String(r.formsRef || ''), peca: r.p || '', fab: ctFab(r), qt: qt, qtBruta: qtBruta,
+        id: String(r.id), formsRef: String(r.formsRef || ''), status: String(r.status || ''),
+        peca: r.p || '', fab: ctFab(r), qt: qt, qtBruta: qtBruta,
         aberto: ctIso(r.dt), idade: ctDias(r.dt), cheg: cheg, parado: cheg ? ctDias(cheg) : null,
         pronto: !!cheg, temCompra: (() => { try { return (window.__comprasDoForm(r) || []).length > 0; } catch (e) { return false; } })(),
         maq: maq, porque: porque, minT: tT, minC: tC,
@@ -28227,13 +28269,16 @@ function ctConsumo(l) {
 }
 
 /* ── a sugestão: rodízio entre as fábricas ───────────────────────── */
-function ctSugere(mes, prontos) {
+function ctSugere(mes, prontos, semMaterial) {
   /* Uma fábrica de cada vez, em volta. Dentro da fábrica, o pedido mais
      antigo primeiro. Enche até a capacidade de cada máquina acabar — e
      continua tentando as outras, porque um item de centro ainda cabe
      quando o torno já encheu. */
+  /* Rejeitado aparece na lista — alguém pode querer reabrir —, mas o
+     planejador automático não põe na máquina o que foi recusado.      */
+  const vale = l => l.fab && l.status !== 'Rejeitado';
   const porFab = {};
-  prontos.forEach(l => { if (l.fab) (porFab[l.fab] = porFab[l.fab] || []).push(l); });
+  prontos.forEach(l => { if (vale(l)) (porFab[l.fab] = porFab[l.fab] || []).push(l); });
   Object.keys(porFab).forEach(f => porFab[f].sort((a, b) => (b.idade || 0) - (a.idade || 0)));
 
   /* A volta começa pela fábrica que está esperando há mais tempo. */
@@ -28256,25 +28301,92 @@ function ctSugere(mes, prontos) {
         && usoFab[f] + tot <= (cota[f] || 0) * 60;
   };
 
+  const pega = (f, i) => {
+    const l = porFab[f].splice(i, 1)[0];
+    const c = ctConsumo(l);
+    usoT += c.TORNO; usoC += c.CENTRO; usoFab[f] += c.TORNO + c.CENTRO;
+    escolhidos.push(l.id);
+    return l;
+  };
+
+  /* ── 1ª volta: justiça entre as fábricas ──
+     Uma fábrica de cada vez, sempre o pedido mais antigo que ainda cabe.
+     Assim ninguém fica para trás porque tem a fila menor. Uma peça grande
+     que não entra não trava as pequenas atrás dela.                      */
+  const fechou = {};
   let girando = true;
   while (girando) {
     girando = false;
     for (const f of fabs) {
-      const fila = porFab[f];
-      if (!fila.length) continue;
-      /* O primeiro da fila que ainda cabe — assim uma peça grande que não
-         entra não trava as pequenas que vêm atrás. */
-      const i = fila.findIndex(l => cabe(f, l));
-      if (i < 0) { fila.length = 0; continue; }     // essa fábrica fechou o mês
-      const l = fila.splice(i, 1)[0];
-      const c = ctConsumo(l);
-      usoT += c.TORNO; usoC += c.CENTRO; usoFab[f] += c.TORNO + c.CENTRO;
-      escolhidos.push(l.id);
-      girando = true;                                // passa a vez à próxima fábrica
+      if (fechou[f] || !porFab[f].length) continue;
+      const i = porFab[f].findIndex(l => cabe(f, l));
+      if (i < 0) { fechou[f] = true; continue; }    // nada mais cabe nessa volta
+      pega(f, i);
+      girando = true;                                // passa a vez à próxima
     }
   }
-  return escolhidos;
+
+  /* ── 2ª volta: fechar os buracos ──
+     A 1ª volta dá a vez a todo mundo, mas costuma parar com horas sobrando:
+     o que sobrou na fila é grande demais para o resto do mês. Aqui o
+     critério muda — em vez do mais antigo, entra o MAIOR que ainda cabe no
+     que sobrou, que é o que mais aproveita a hora. Repete até nada caber.
+     Empate de tamanho, o mais antigo leva.                               */
+  const enche = () => fabs.forEach(f => {
+    const fila = porFab[f];
+    let achou = true;
+    while (achou && fila.length) {
+      achou = false;
+      let melhor = -1, melhorMin = -1;
+      for (let i = 0; i < fila.length; i++) {
+        if (!cabe(f, fila[i])) continue;
+        const c = ctConsumo(fila[i]);
+        const min = c.TORNO + c.CENTRO;
+        if (min > melhorMin) { melhorMin = min; melhor = i; }
+      }
+      if (melhor >= 0) { pega(f, melhor); achou = true; }
+    }
+  });
+  enche();
+
+  /* ── 3ª volta: o resto do backlog ──
+     Quase sempre a fila de material em casa acaba antes das horas: dá para
+     fazer bem mais do que chegou. Aí entram os que ainda esperam material,
+     para a hora ociosa virar cobrança de compras com nome e número — e não
+     um mês com a oficina parada e ninguém sabendo o porquê.             */
+  const esperando = [];
+  (semMaterial || []).forEach(l => {
+    if (!vale(l)) return;
+    if (!porFab[l.fab]) { porFab[l.fab] = []; if (fabs.indexOf(l.fab) < 0) fabs.push(l.fab); }
+    porFab[l.fab].push(l);
+    esperando.push(l.id);
+  });
+  if (esperando.length) {
+    fabs.forEach(f => porFab[f].sort((a, b) => (b.idade || 0) - (a.idade || 0)));
+    enche();
+  }
+
+  const esp = new Set(esperando);
+  return { ids: escolhidos, semMaterial: escolhidos.filter(id => esp.has(id)) };
 }
+
+/* Quanto de cada fábrica foi usado, para a tela mostrar o aproveitamento. */
+function ctOcupacao(mes, ids, todas) {
+  const sel = new Set(ids);
+  const fabs = ctFabsDe(todas.filter(l => l.pronto));
+  const cota = ctHorasFab(mes, fabs);
+  const out = {};
+  fabs.forEach(f => {
+    const meus = todas.filter(l => sel.has(l.id) && l.fab === f);
+    const min = meus.reduce((a, l) => { const c = ctConsumo(l); return a + c.TORNO + c.CENTRO; }, 0);
+    const teto = (cota[f] || 0) * 60;
+    out[f] = { forms: meus.length, min: min, teto: teto,
+               pc: teto ? Math.round(min / teto * 100) : 0,
+               sobra: todas.filter(l => l.pronto && l.fab === f && !sel.has(l.id)).length };
+  });
+  return out;
+}
+window.ctOcupacao = ctOcupacao;
 
 /* ════════════════════════════ TELA ════════════════════════════ */
 
@@ -28343,6 +28455,7 @@ function carteiraRender() {
   const q = (ctBusca || '').toLowerCase();
   const visiveis = prontos.filter(l =>
     (!q || [l.id, l.peca, l.fab].some(v => String(v).toLowerCase().indexOf(q) >= 0))
+    && (!ctStatus || l.status === ctStatus)
     && (!ctFabrica || l.fab === ctFabrica)
     && (!ctSoSemPadrao || l.estimado));
 
@@ -28485,11 +28598,17 @@ function ctLinhaHtml(l, naCarteira) {
     : '<span class="ct-maq ct-maq-x">indefinida</span>';
   const c = ctConsumo(l);
   const tempo = l.estimado ? '~' + ctH(c.TORNO + c.CENTRO) : ctH(c.TORNO + c.CENTRO);
-  return '<div class="ct-item' + (naCarteira ? ' ct-item-on' : '') + '">'
+  /* Quem está na carteira sem material em casa precisa gritar: é a peça
+     que não pode ir para a máquina e segura o mês inteiro.             */
+  const falta = naCarteira && !l.pronto
+    ? '<span class="ct-maq ct-maq-falta" title="O material ainda não chegou — não vai para a programação">⏳ sem material</span>'
+    : '';
+  return '<div class="ct-item' + (naCarteira ? ' ct-item-on' : '')
+    + (naCarteira && !l.pronto ? ' ct-item-falta' : '') + '">'
     + '<button class="ct-tog" title="' + (naCarteira ? 'Tirar da carteira' : 'Pôr na carteira') + '" '
     + 'onclick="ctAlterna(\'' + ctEsc(l.id) + '\')">' + (naCarteira ? '−' : '+') + '</button>'
     + '<div class="ct-item-main">'
-    +   '<div class="ct-item-top"><b>#' + ctEsc(l.id) + '</b> ' + selo
+    +   '<div class="ct-item-top"><b>#' + ctEsc(l.id) + '</b> ' + ctStatusHtml(l.status) + selo + falta
     +     '<span class="ct-fab">' + ctEsc(l.fab) + '</span></div>'
     +   '<div class="ct-item-peca">' + (ctEsc(l.peca) || '—') + '</div>'
     +   '<div class="ct-item-sub">'
@@ -28544,6 +28663,7 @@ function ctPainelCarteira(carteira, usoT, usoC) {
 }
 
 function ctPainelProntos(visiveis, prontos, fabs) {
+  const sts = [...new Set(prontos.map(l => l.status).filter(Boolean))].sort();
   return '<div class="ct-painel">'
     + '<div class="ct-sub"><h2>Prontos para usinar</h2>'
     + '<span>' + prontos.length + ' com material em casa, fora da carteira</span></div>'
@@ -28552,6 +28672,10 @@ function ctPainelProntos(visiveis, prontos, fabs) {
     +     ' autocomplete="off" oninput="ctSetBusca(this.value)">'
     +   '<select onchange="ctSetFabrica(this.value)"><option value="">Todas as fábricas</option>'
     +     fabs.map(f => '<option value="' + ctEsc(f) + '"' + (f === ctFabrica ? ' selected' : '') + '>' + ctEsc(f) + '</option>').join('')
+    +   '</select>'
+    +   '<select onchange="ctSetStatus(this.value)"><option value="">Todos os status</option>'
+    +     sts.map(st => '<option value="' + ctEsc(st) + '"' + (st === ctStatus ? ' selected' : '')
+    +       + '>' + ctEsc(CT_ST_LBL[st] || st) + '</option>').join('')
     +   '</select>'
     +   '<label class="ct-chk"><input type="checkbox"' + (ctSoSemPadrao ? ' checked' : '')
     +     ' onchange="ctSetSemPadrao(this.checked)"> só os sem padrão</label>'
@@ -28622,6 +28746,8 @@ function ctTrocaMes(m) { if (m) { ctMes = m; carteiraRender(); } }
    input era destruído junto com o resto do HTML. Agora o desenho espera a
    digitação parar, e o foco volta para onde estava.                      */
 let _ctBuscaTimer = null;
+function ctSetStatus(v) { ctStatus = v; carteiraRender(); }
+window.ctSetStatus = ctSetStatus;
 function ctSetBusca(v) {
   ctBusca = v;
   if (_ctBuscaTimer) clearTimeout(_ctBuscaTimer);
@@ -28708,26 +28834,54 @@ function ctSugerir() {
 
 function ctMontaSugestao(todas, prontos) {
   const d = ctDoMes(ctMes);
-  const escolhidos = ctSugere(ctMes, prontos);
+  const espera = todas.filter(l => !l.pronto && l.fab);
+  const r = ctSugere(ctMes, prontos, espera);
+  const escolhidos = r.ids;
+  const semMat = new Set(r.semMaterial);
   d.refs = escolhidos;
   ctSalvaMes(ctMes, d);
   carteiraRender();
-  const sel = new Set(escolhidos);
-  const todasFabs = ctFabsDe(prontos);
-  const cota = ctHorasFab(ctMes, todasFabs);
+  const oc = ctOcupacao(ctMes, escolhidos, todas);
+  const fabs = Object.keys(oc).filter(f => oc[f].forms || oc[f].sobra).sort();
+  let somaMin = 0, somaTeto = 0;
+  fabs.forEach(f => { somaMin += oc[f].min; somaTeto += oc[f].teto; });
+  const pcGeral = somaTeto ? Math.round(somaMin / somaTeto * 100) : 0;
+
   const linha = f => {
-    const meus = todas.filter(l => sel.has(l.id) && l.fab === f);
-    const hs = meus.reduce((a, l) => { const c = ctConsumo(l); return a + c.TORNO + c.CENTRO; }, 0) / 60;
-    const sobra = prontos.filter(l => l.fab === f && !sel.has(l.id)).length;
-    return '<tr><td>' + ctEsc(f) + '</td><td><b>' + meus.length + '</b> forms</td>'
-         + '<td>' + hs.toFixed(0) + ' h <span>de ' + (cota[f] || 0) + ' h</span></td>'
-         + '<td>' + (sobra ? sobra + ' na fila' : '—') + '</td></tr>';
+    const o = oc[f];
+    const cor = o.pc >= 90 ? '#059669' : o.pc >= 70 ? '#0E7490' : '#F59E0B';
+    return '<tr><td>' + ctEsc(f) + '</td>'
+      + '<td><b>' + o.forms + '</b> forms</td>'
+      + '<td>' + ctH(o.min) + ' <span>de ' + Math.round(o.teto / 60) + ' h</span></td>'
+      + '<td style="color:' + cor + ';font-weight:800">' + o.pc + '%</td>'
+      + '<td>' + (o.sobra ? o.sobra + ' na fila' : '—') + '</td></tr>';
   };
+  /* Sobrou hora com fila esperando? Então o que falta não cabe no que
+     restou — e o planejador precisa saber disso, não descobrir depois. */
+  const apertados = fabs.filter(f => oc[f].pc < 85 && oc[f].sobra);
+  const nMat = semMat.size;
+  const minMat = todas.filter(l => semMat.has(l.id))
+    .reduce((a, l) => { const c = ctConsumo(l); return a + c.TORNO + c.CENTRO; }, 0);
   ctAviso('✨ Carteira de ' + ctMesNome(ctMes) + ' montada',
-    '<b>' + escolhidos.length + ' forms</b>, dentro das horas de cada fábrica:'
-    + '<table class="ct-dlg-tab">'
-    + todasFabs.filter(f => todas.some(l => sel.has(l.id) && l.fab === f)).map(linha).join('')
-    + '</table>'
+    '<b>' + escolhidos.length + ' forms</b> · ' + ctH(somaMin) + ' de '
+    + Math.round(somaTeto / 60) + ' h disponíveis · <b>' + pcGeral + '%</b> das horas ocupadas'
+    + '<table class="ct-dlg-tab">' + fabs.map(linha).join('') + '</table>'
+    + (nMat
+        ? '<div style="color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;'
+          + 'padding:9px 11px;font-size:11.5px;line-height:1.6;margin-bottom:10px">'
+          + '<b>' + nMat + ' desses ' + (nMat === 1 ? 'forms ainda espera' : 'forms ainda esperam')
+          + ' material</b> (' + ctH(minMat) + ' do mês). O material em casa não dava para encher as horas, '
+          + 'então completei com a fila de quem está travado — é a lista de compras que precisa chegar '
+          + 'para o mês fechar. Eles aparecem marcados na carteira e não vão para a programação '
+          + 'enquanto o material não chegar.</div>'
+        : '')
+    + (apertados.length
+        ? '<div style="color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;'
+          + 'padding:9px 11px;font-size:11.5px;line-height:1.6;margin-bottom:10px">'
+          + 'Em <b>' + apertados.map(ctEsc).join('</b>, <b>') + '</b> sobrou hora com fila esperando: '
+          + 'o que restou é grande demais para o buraco que ficou. Dá para aproveitar '
+          + 'aumentando a cota dessa fábrica, ou puxando um forms na mão pelo <b>+</b>.</div>'
+        : '')
     + 'Ajuste no <b>+</b> e no <b>−</b> e depois gere a planilha do mês.');
 }
 
@@ -28757,7 +28911,8 @@ function ctTabelaItens(itens) {
       : '';
     return cab + '<tr>'
       + '<td class="ct-tb-n">' + (i + 1) + '</td>'
-      + '<td><b>#' + ctEsc(l.id) + '</b></td>'
+      + '<td><b>#' + ctEsc(l.id) + '</b> ' + ctStatusHtml(l.status)
+      +   (l.pronto ? '' : ' <span class="ct-tb-falta">⏳ sem material</span>') + '</td>'
       + '<td class="ct-tb-peca">' + (ctEsc(l.peca) || '—') + '</td>'
       + '<td>' + (l.qt || '—') + '</td>'
       + '<td>' + (l.maq === 'AMBAS' ? 'Torno + Centro' : l.maq === 'TORNO' ? 'Torno'
@@ -28940,11 +29095,15 @@ function ctProgEstado() {
 /* O que está na carteira e já tem tempo para ir. */
 function ctProgCandidatos() {
   const naCart = new Set(ctDoMes(ctMes).refs || []);
-  const linhas = ctLinhas().filter(l => naCart.has(l.id));
-  return { comTempo: linhas.filter(l => !l.estimado), chute: linhas.filter(l => l.estimado) };
+  const todos = ctLinhas().filter(l => naCart.has(l.id));
+  /* Sem material em casa não se coloca peça na máquina, por mais que o
+     tempo esteja definido. Esses ficam de fora e são contados à parte. */
+  const linhas = todos.filter(l => l.pronto);
+  return { comTempo: linhas.filter(l => !l.estimado), chute: linhas.filter(l => l.estimado),
+           semMaterial: todos.filter(l => !l.pronto) };
 }
 function ctParaProgramacao() {
-  const { comTempo, chute } = ctProgCandidatos();
+  const { comTempo, chute, semMaterial } = ctProgCandidatos();
   if (!comTempo.length && !chute.length) {
     ctAviso('Carteira vazia', 'Não há nada em <b>' + ctEsc(ctMesNome(ctMes)) + '</b> para mandar. '
       + 'Use <b>✨ Sugerir carteira</b> ou marque forms no <b>+</b>.');
@@ -28960,6 +29119,9 @@ function ctParaProgramacao() {
     + 'com os minutos abertos em torno e centro. Lá você arrasta cada um para o dia, o turno e a máquina.'
     + '<div style="margin-top:10px;color:var(--txt3);font-size:11.5px;line-height:1.6">'
     + novos + ' entram como novos · ' + (comTempo.length - novos) + ' já estão lá e só têm o tempo atualizado.'
+    + ((semMaterial && semMaterial.length)
+        ? '<br><span style="color:#f59e0b">' + semMaterial.length
+          + ' forms da carteira ficam de fora: o material ainda não chegou.</span>' : '')
     + '</div>'
     + (chute.length
         ? '<div style="border-top:1px solid var(--border2);margin-top:12px;padding-top:11px">'
