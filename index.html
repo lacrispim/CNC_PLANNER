@@ -504,6 +504,14 @@ body.mode-fabricas .tab-financas{display:none !important;}
 #solicitacoesView .sol-hist-change b{color:#92400e}
 #solicitacoesView .sol-hist-note{background:#fffbeb;border-left:3px solid #f59e0b;padding:4px 8px;border-radius:3px;color:#78350f;font-style:italic;margin-top:2px}
 #solicitacoesView .sol-hist-empty{color:var(--tx3);font-size:13px;padding:6px;font-style:italic;text-align:center}
+#solicitacoesView .sol-hist-mais{display:flex;align-items:center;gap:9px;padding:9px 6px 2px;flex-wrap:wrap}
+#solicitacoesView .sol-hist-mais button{font:inherit;font-size:11.5px;font-weight:700;color:#0E7490;
+  background:transparent;border:1px solid var(--border2);border-radius:7px;padding:4px 10px;cursor:pointer}
+#solicitacoesView .sol-hist-mais button:hover{background:#ecfeff;border-color:#22D3EE}
+#solicitacoesView .sol-hist-mais span{font-size:11px;color:var(--tx3)}
+#solicitacoesView .sol-qt-ruim{display:inline-block;margin-left:4px;font-size:9.5px;font-weight:800;
+  color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:5px;padding:1px 4px;
+  cursor:help;vertical-align:1px;white-space:nowrap}
 /* Em modo fábricas também esconde alguns botões pesados que não fazem sentido */
 body.mode-fabricas .tbtn.v{display:none !important;}
 
@@ -2541,9 +2549,13 @@ body.tema-escuro code,body.tema-escuro pre{background:var(--surface3);color:var(
      (≈200 KB) era baixada e compilada em toda carga sem nunca ser usada. -->
 
 <!-- Firebase SDK (Realtime Database) — versão compat (scripts globais) -->
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js" onerror="window.__authTagErro=true"></script>
+<!-- defer: sem isso a página inteira esperava os três chegarem do gstatic antes
+     de desenhar qualquer coisa — numa rede de fábrica ruim, segundos de tela branca.
+     Nada do app toca `firebase` durante a análise do HTML; o bootstrap roda meio
+     segundo depois e, por garantia, espera o SDK aparecer (veja FB.init).          -->
+<script defer src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js" onerror="window.__authTagErro=true"></script>
 <!-- firebase-firestore-compat removido: não era usado em nenhuma parte do app.
      Quando o apontamento passar a gravar no Firestore, carregar sob demanda. -->
 
@@ -2714,7 +2726,7 @@ body.tema-escuro code,body.tema-escuro pre{background:var(--surface3);color:var(
       <span class="tab-group-label-v2" data-i18n="tab.cnc.label">PLANEJAMENTO CNC</span>
       <button class="tab sol-entry on" onclick="setView('solicitacoes')" data-i18n="tab.solicitacoes">SOLICITAÇÕES</button>
       <button class="tab" onclick="setView('desenhos')" data-i18n="tab.desenhos">DESENHOS</button>
-      <button class="tab" onclick="setView('carteira')" title="Carteira do mês — escolher o que a usinagem vai fazer no mês, só com o que já tem material">📋 CARTEIRA DO MÊS</button>
+      <button class="tab" onclick="setView('carteira')" title="Planejamento do mês — escolher o que a usinagem vai fazer no mês, só com o que já tem material">📋 PLANEJAMENTO DO MÊS</button>
       <button class="tab" onclick="setView('almoxarifado')" title="Almoxarifado — ferramental: insertos, fresas, brocas e porta-ferramentas">🧰 ALMOXARIFADO</button>
     </div>
   </div>
@@ -4311,7 +4323,7 @@ window.__apontFabricaDe = __apontFabricaDe;
 function __apontPadrao(ref, maq, qtd){
   try {
     const nk = __apontNormRef;
-    /* O tempo que o planejador definiu na Carteira do mês vale mais que o
+    /* O tempo que o planejador definiu no Planejamento do mês vale mais que o
        padrão da Biblioteca — é alguém que conhece a peça dizendo o tempo.
        Máquina por máquina: se só o torno foi definido, o centro continua
        vindo da Biblioteca.                                               */
@@ -6479,7 +6491,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
       </div>
       <select id="dashDy" onchange="dashRender()" data-i18n-title="filter.dia" title="Dia"><option value="" data-i18n="filter.dia">Dia</option></select>
       <button id="dashSoProg" class="dash-prog-btn" onclick="dashToggleProg()" title="Mostrar só as solicitações que já têm data de produção definida">📅 Só programadas</button>
-      <button id="dashSoCart" class="dash-prog-btn" onclick="dashToggleCarteira()" title="Mostrar só os forms que estão na Carteira do mês">📋 Só a carteira</button>
+      <button id="dashSoCart" class="dash-prog-btn" onclick="dashToggleCarteira()" title="Mostrar só os forms que estão no Planejamento do mês">📋 Só o planejamento</button>
       <button class="dash-clear-btn" onclick="dashClearFilters()" data-i18n-title="dash.limparFiltros" title="Limpar filtros de data">✕</button>
       <button class="dash-refresh-btn" onclick="dashRender()" data-i18n-title="dash.atualizarTitle" title="Atualizar dados"><span data-i18n="dash.atualizar">↻ Atualizar</span></button>
     </div>
@@ -14511,6 +14523,7 @@ const FB = (function() {
   let app = null;
   let db = null;
   let connected = false;
+  let _esperandoSDK = false;
   let listeners = {}; // path → unsubscribe fn
   let _syncTimer = null;
   let _suppressListeners = false; // flag pra evitar loop quando estamos escrevendo
@@ -14524,8 +14537,25 @@ const FB = (function() {
       return false;
     }
     if (typeof firebase === 'undefined') {
-      console.warn('[FB] SDK do Firebase não carregou. Conecte-se à internet.');
-      setStatus('off', 'SDK offline');
+      /* Com os scripts em `defer` o SDK pode ainda estar a caminho quando o
+         bootstrap roda. Não é motivo para desistir: espera e tenta de novo. */
+      console.warn('[FB] SDK ainda não chegou — aguardando.');
+      setStatus('conn', 'Carregando...');
+      if (!_esperandoSDK) {
+        _esperandoSDK = true;
+        let t = 0;
+        const iv = setInterval(() => {
+          if (typeof firebase !== 'undefined') {
+            clearInterval(iv); _esperandoSDK = false;
+            console.log('[FB] SDK chegou, reiniciando');
+            if (typeof fbBootstrap === 'function') fbBootstrap();
+          } else if (++t > 60) {            // 30 s
+            clearInterval(iv); _esperandoSDK = false;
+            setStatus('off', 'SDK offline');
+            console.warn('[FB] SDK do Firebase não carregou. Conecte-se à internet.');
+          }
+        }, 500);
+      }
       return false;
     }
     try {
@@ -14547,19 +14577,36 @@ const FB = (function() {
         // CATCH-UP: ao reconectar após estar offline, re-envia tudo do localStorage
         if (connected && _wasConnected === false) {
           _wasConnected = true;
-          // só dispara catch-up se já houve init completo (não roda na primeira conexão)
+          /* Reenvia APENAS o que foi editado aqui e não chegou ao servidor.
+             Antes isto reenviava o localStorage inteiro meio segundo depois
+             de conectar — em toda abertura do app, correndo contra o
+             download do bootstrap. Resultado: o navegador que abrisse por
+             último gravava a cópia dele por cima da de todo mundo, e uma
+             edição feita em outra máquina voltava ao estado antigo sem
+             ninguém entender por quê. O que veio do servidor está
+             carimbado como confirmado, então aqui ele é ignorado.      */
           if (typeof FB_KEY_MAP !== 'undefined') {
-            setTimeout(() => {
+            /* Espera o bootstrap terminar. Enquanto ele não baixou e
+               carimbou, "pendente" aqui ainda quer dizer "não comparei" —
+               e reenviar nesse estado grava cópia velha por cima do
+               servidor. Teto de 30 s para não ficar preso se ele falhar. */
+            const _catchUp = (tentativa) => {
+              if (!window.__fbBootstrapPronto && (tentativa || 0) < 60) {
+                return setTimeout(() => _catchUp((tentativa || 0) + 1), 500);
+              }
+              let reenviados = 0;
               for (const [key, fbPath] of Object.entries(FB_KEY_MAP)) {
                 const raw = localStorage.getItem(key);
                 if (!raw) continue;
-                try {
-                  const data = JSON.parse(raw);
-                  saveDebounced(fbPath, data, 800);
-                } catch(e) { /* ignora */ }
+                let data;
+                try { data = JSON.parse(raw); } catch (e) { continue; }
+                if (conferido(fbPath, data)) continue;   // já está igual no servidor
+                saveDebounced(fbPath, data, 800);
+                reenviados++;
               }
-              console.log('[FB] Catch-up automático após reconexão concluído');
-            }, 500);
+              console.log('[FB] Catch-up: ' + reenviados + ' caminho(s) com edição pendente reenviado(s)');
+            };
+            setTimeout(() => _catchUp(0), 500);
           }
         } else if (!connected) {
           _wasConnected = false;
@@ -14653,17 +14700,34 @@ const FB = (function() {
     try { Object.getPrototypeOf(localStorage).setItem.call(localStorage, FB_ACK_KEY, JSON.stringify(a)); }
     catch (e) {}
   }
-  function _marcaPendente(path, value) {
+  function _marcaPendente() { /* nada a fazer: quem manda é a confirmação */ }
+  /* Guarda a impressão digital do que o SERVIDOR confirmou ter recebido.
+     Essa é a única prova de que existe cópia na nuvem — e é com ela que
+     o app decide se pode apagar algo daqui.                           */
+  function _marcaAck(path, value) {
     const d = _digital(value); if (!d) return;
     const a = _aEnviar(); a[path] = d; _gravaAEnviar(a);
   }
-  function _marcaAck(path, value) {
-    const d = _digital(value); if (!d) return;
-    const a = _aEnviar();
-    if (a[path] === d) { delete a[path]; _gravaAEnviar(a); }   // só o valor confirmado sai da fila
+  /* O que está aqui já chegou no servidor, exatamente como está? */
+  function conferido(path, valorLocal) {
+    const d = _digital(valorLocal);
+    return d != null && _aEnviar()[path] === d;
   }
   /* Tem edição daqui que ainda não chegou no servidor? */
-  function naoEnviado(path) { return _aEnviar()[path] != null; }
+  function _chaveDe(path) {
+    try {
+      if (typeof FB_KEY_MAP === 'undefined') return null;
+      for (const k in FB_KEY_MAP) if (FB_KEY_MAP[k] === path) return k;
+    } catch (e) {}
+    return null;
+  }
+  function naoEnviado(path) {
+    const lsKey = _chaveDe(path);
+    let local = null;
+    if (lsKey) { try { local = JSON.parse(localStorage.getItem(lsKey) || 'null'); } catch (e) { local = null; } }
+    if (local === null) return false;              // não há nada daqui para perder
+    return !conferido(path, local);
+  }
 
   function _setRaw(path, value) {
     _stats.writes++;
@@ -14879,7 +14943,12 @@ const FB = (function() {
       .catch(e => { _stats.failedReads++; reportError('loadPath ' + path, e); return null; });
   }
 
-  return { init, save, saveRaw, saveDebounced, flushDebounced, pendentes: _pendentes, naoEnviado,
+  /* O que foi BAIXADO do servidor já está igual lá — tem de ficar carimbado
+     como confirmado. Sem isso, do segundo carregamento em diante o app
+     tratava tudo que está aqui como edição local pendente e reenviava por
+     cima do servidor, apagando o que outro navegador tinha gravado. */
+  return { init, save, saveRaw, saveDebounced, flushDebounced, pendentes: _pendentes, naoEnviado, conferido,
+           marcaAck: _marcaAck,
            saveKey, listen, suppressListeners, loadAll, loadPath, setStatus,
            healthCheck, reportError,
            get db() { return db; },
@@ -15575,12 +15644,7 @@ window.__faxinaAuto = function (exceto) {
       const k = localStorage.key(i);
       if (!k || !rec.has(k)) continue;
       if (exceto && k === exceto) continue;        // é a gravação em curso
-      const path = mapa[k];
-      if (path) {
-        let pend = true;
-        try { pend = (typeof FB !== 'undefined' && FB.naoEnviado) ? FB.naoEnviado(path) : true; } catch (e) { pend = true; }
-        if (pend) continue;                        // tem coisa para subir: não encosta
-      }
+      if (!window.__podeApagar(k)) continue;      // o servidor não confirmou: não encosta
       alvos.push([k, (localStorage.getItem(k) || '').length]);
     }
     alvos.sort((a, b) => (prioridade(a[0]) - prioridade(b[0])) || (b[1] - a[1]));
@@ -15614,6 +15678,27 @@ window.__agendaRecarga = function () {
 /* Caches que não passam pelo FB_KEY_MAP mas são reconstruídos pelo
    listener assim que o app abre — apagar é inofensivo.             */
 const LS_CACHES = ['apont_regs_cache_v1', 'cnc_compras_mp_v1'];
+/* A pergunta que tem que ser feita antes de apagar qualquer coisa:
+   "o servidor TEM isto?". Não basta estar na lista de sincronizados —
+   num navegador onde a sincronização nunca funcionou, a cópia daqui é a
+   única que existe. Foi assim que a carteira do mês se perdeu.      */
+window.__podeApagar = function (chave) {
+  if (!chave) return false;
+  const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+  const path = mapa[chave];
+  if (!path) return LS_CACHES.indexOf(chave) >= 0;   // cache puro: o listener refaz
+  let local = null;
+  try { local = JSON.parse(localStorage.getItem(chave) || 'null'); } catch (e) { return false; }
+  if (local === null) return true;                   // não há nada aqui para perder
+  try { return !!(typeof FB !== 'undefined' && FB.conferido && FB.conferido(path, local)); }
+  catch (e) { return false; }
+};
+/* Por que NÃO pode — para a tela explicar em vez de só recusar. */
+window.__porQueNaoApagar = function (chave) {
+  const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+  if (!mapa[chave] && LS_CACHES.indexOf(chave) < 0) return 'só existe aqui';
+  return 'ainda não confirmado na nuvem';
+};
 function __lsRecuperavel() {
   try {
     const m = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
@@ -15636,7 +15721,8 @@ window.__limpaMemoria = async function () {
     if (!k) continue;
     const n = k.length + (localStorage.getItem(k) || '').length;
     if (n < 2048) continue;                              // migalha não interessa
-    itens.push({ k: k, kb: Math.round(n / 1024), nuvem: rec.has(k) });
+    itens.push({ k: k, kb: Math.round(n / 1024), nuvem: window.__podeApagar(k),
+                 porque: window.__podeApagar(k) ? '' : window.__porQueNaoApagar(k) });
   }
   itens.sort((a, b) => b.kb - a.kb);
   const tot = window.__ocupacaoLS().totalKB;
@@ -15646,8 +15732,8 @@ window.__limpaMemoria = async function () {
 
   const linha = x => '<tr><td style="font-family:monospace;font-size:10.5px">' + ctEsc(x.k) + '</td>'
     + '<td class="ct-tb-num">' + x.kb + ' KB</td>'
-    + '<td>' + (x.nuvem ? '<span style="color:#059669">volta da nuvem</span>'
-                        : '<span style="color:#B45309">só existe aqui</span>') + '</td>'
+    + '<td>' + (x.nuvem ? '<span style="color:#059669">confirmado na nuvem</span>'
+                        : '<span style="color:#B45309">' + ctEsc(x.porque) + '</span>') + '</td>'
     + (x.nuvem ? '<td></td>'
                : '<td><button class="ct-link ct-link-ruim" onclick="__limpaUma(\'' + ctEsc(x.k) + '\')">apagar</button></td>')
     + '</tr>';
@@ -15667,8 +15753,11 @@ window.__limpaMemoria = async function () {
     + podem.map(linha).join('') + soAqui.map(linha).join('')
     + '</tbody></table>'
     + '<div style="margin-top:12px;font-size:11.5px;line-height:1.7;color:var(--txt3)">'
-    + '<b>volta da nuvem</b>: é cópia do Firebase. Apagar aqui não perde nada — recarrega sozinho.<br>'
-    + '<b>só existe aqui</b>: não está no Firebase. Apagar perde de vez; por isso cada um tem seu próprio botão.'
+    + '<b>confirmado na nuvem</b>: o servidor avisou que recebeu exatamente este conteúdo. '
+    + 'Apagar aqui não perde nada.<br>'
+    + '<b>ainda não confirmado na nuvem</b>: foi alterado aqui e o servidor ainda não confirmou. '
+    + 'Não entra na limpeza — some só se você mandar, item a item.<br>'
+    + '<b>só existe aqui</b>: nunca foi para o Firebase.'
     + '</div>',
     '<button class="ct-btn ct-btn-sec" onclick="ctFechaDlg()">Fechar</button>'
     + (podem.length
@@ -15677,22 +15766,52 @@ window.__limpaMemoria = async function () {
     true);
 };
 window.__limpaRecuperaveis = function () {
-  const rec = __lsRecuperavel();
   const alvos = [];
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
-    if (k && rec.has(k)) alvos.push(k);
+    if (k && window.__podeApagar(k)) alvos.push(k);
   }
   ctFechaDlg();
+  if (!alvos.length) {
+    ctAviso('Nada pode ser apagado com segurança',
+      'Nenhuma das cópias daqui foi confirmada pelo servidor. Isso quer dizer que a sincronização '
+      + 'não está funcionando neste navegador — apagar agora perderia o trabalho.<br><br>'
+      + 'Verifique a conexão, recarregue e tente de novo.');
+    return;
+  }
   ctConfirma('Liberar a memória das cópias',
-    'Vou apagar <b>' + alvos.length + ' cópias locais</b> de dados que estão no Firebase e recarregar a página. '
-    + 'Tudo volta do servidor em alguns segundos.<br><br>'
-    + 'Qualquer alteração ainda não enviada já foi mandada antes de abrir esta tela.',
-    'Liberar e recarregar', () => {
-      alvos.forEach(k => { try { localStorage.removeItem(k); } catch (e) {} });
-      try { localStorage.removeItem('cnc_fb_ack_v1'); } catch (e) {}
-      location.reload();
-    });
+    'Vou apagar <b>' + alvos.length + ' cópia(s) local(is)</b> que o servidor <b>confirmou</b> ter recebido, '
+    + 'e recarregar a página. Tudo volta da nuvem em alguns segundos.<br><br>'
+    + 'Antes de apagar cada uma eu releio do servidor para ter certeza — o que não estiver lá fica aqui.',
+    'Conferir e liberar', () => { __limpaConferindo(alvos); });
+};
+
+/* A prova final: relê do Firebase e só apaga o que realmente está lá. */
+window.__limpaConferindo = async function (alvos) {
+  ctFechaDlg();
+  const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+  const apagadas = [], mantidas = [];
+  for (const k of alvos) {
+    const path = mapa[k];
+    if (!path) { try { localStorage.removeItem(k); apagadas.push(k); } catch (e) {} continue; }
+    let noServidor = null;
+    try { noServidor = (typeof FB !== 'undefined' && FB.loadPath) ? await FB.loadPath(path) : null; }
+    catch (e) { noServidor = null; }
+    const temLa = noServidor !== null && noServidor !== undefined
+      && !(typeof noServidor === 'object' && !Object.keys(noServidor).length);
+    if (temLa) { try { localStorage.removeItem(k); apagadas.push(k); } catch (e) {} }
+    else { mantidas.push(k); console.warn('[espaço] ' + k + ' não está no servidor — mantido aqui'); }
+  }
+  if (!apagadas.length) {
+    ctAviso('Nada foi apagado',
+      'Reli o servidor e ele não tem nenhuma dessas cópias. Mantive tudo aqui — a sincronização '
+      + 'precisa voltar a funcionar antes de liberar memória.');
+    return;
+  }
+  if (mantidas.length) {
+    console.warn('[espaço] mantidas por não estarem no servidor:', mantidas.join(', '));
+  }
+  location.reload();
 };
 window.__limpaUma = function (chave) {
   ctFechaDlg();
@@ -15849,6 +15968,14 @@ setTimeout(_resetByUrl, 800);
 function _espelhaNoFirebase(key, value) {
   try {
     const fbPath = FB_KEY_MAP[key];
+    /* Enquanto o bootstrap não baixou e comparou com o servidor, nada daqui
+       sobe. Vários módulos gravam o estado inicial deles ao abrir; se isso
+       subisse antes da comparação, a cópia velha deste navegador ia por cima
+       do que outra pessoa gravou — e aí o download já tinha lido a raiz, então
+       a tela mostrava o dado novo e o servidor guardava o velho. O que for
+       escrito nesta janela fica sem confirmação e o catch-up, que roda depois
+       do bootstrap, envia. */
+    if (fbPath && !window.__fbBootstrapPronto) return;
     if (fbPath && typeof FB !== 'undefined' && FB.isConnected && FB.isConnected()) {
       // OTIMIZAÇÃO: pra /sol_mods, o _persistRec já manda chave a chave via FB.saveKey,
       // então o interceptor PULA esse path (evita escrita dupla e payloads gigantes).
@@ -15863,6 +15990,38 @@ function _espelhaNoFirebase(key, value) {
   } catch (e) { /* espelhamento nunca pode atrapalhar a gravação local */ }
 }
 window._espelhaNoFirebase = _espelhaNoFirebase;
+
+/* ─── Gravar sem engolir a falha ───────────────────────────────────────
+   Vários pontos faziam `try { localStorage.setItem(...) } catch (e) {}`.
+   Quando a memória do navegador enche, a gravação falha, o catch engole e a
+   pessoa segue acreditando que salvou — foi assim que uma solicitação criada
+   à mão sumiu sem aviso. Aqui a falha libera espaço, tenta de novo e, se
+   ainda não couber, aparece na tela em vez de desaparecer.
+   `cru` = não espelhar no Firebase (para caches que são só locais).      */
+window.__gravaSeguro = function (chave, texto, rotulo, cru) {
+  const grava = cru
+    ? (k, v) => Object.getPrototypeOf(localStorage).setItem.call(localStorage, k, v)
+    : (k, v) => localStorage.setItem(k, v);
+  try { grava(chave, texto); return true; } catch (e) {
+    console.warn('[gravar] não couber ' + chave + ' — liberando espaço', e);
+    try { if (window.__anotaTetoLS) window.__anotaTetoLS(e); } catch (e2) {}
+    for (let t = 0; t < 4; t++) {
+      let liberou = 0;
+      try { liberou = window.__faxinaAuto ? window.__faxinaAuto(chave) : 0; } catch (e3) { liberou = 0; }
+      if (liberou <= 0) break;
+      try { grava(chave, texto); return true; } catch (e4) {}
+    }
+    console.error('[gravar] FALHOU ' + chave + (rotulo ? ' (' + rotulo + ')' : ''));
+    try {
+      if (typeof toast === 'function') {
+        toast('⚠️ Não consegui salvar ' + (rotulo || chave)
+              + ' — a memória do navegador está cheia. Use Limpar memória antes de continuar.',
+              'error', 9000);
+      }
+    } catch (e5) {}
+    return false;
+  }
+};
 // remove o lixo deixado pelas versões anteriores (um item chamado "setItem")
 try { if (localStorage.getItem('setItem') !== null) Storage.prototype.removeItem.call(localStorage, 'setItem'); } catch (e) {}
 
@@ -16379,7 +16538,8 @@ function loadConfig(){
   try{const s=localStorage.getItem(LS_CFG);return s?JSON.parse(s):{};}catch(e){return{};}
 }
 function saveConfigLS(cfg){
-  try{localStorage.setItem(LS_CFG,JSON.stringify(cfg));}catch(e){}
+  if (window.__gravaSeguro) window.__gravaSeguro(LS_CFG, JSON.stringify(cfg), 'a configuração');
+  else { try{ localStorage.setItem(LS_CFG,JSON.stringify(cfg)); } catch(e){ console.error('[gravar] FALHOU', LS_CFG, e); } }
 }
 
 let cfgWB=null, cfgRows=[], cfgHdrs=[];
@@ -16932,7 +17092,8 @@ const SOL_FB_PATH = 'cnc_planner/solicitacoes_mods';
 function _loadMods(){ try{ return JSON.parse(localStorage.getItem(SOL_MODS_KEY))||{}; } catch{ return {}; } }
 function _saveMods(m){ try{ localStorage.setItem(SOL_MODS_KEY, JSON.stringify(m)); } catch(e){ console.error('[Sol] não consegui gravar as alterações neste navegador:', e); if (typeof toast === 'function') toast('⚠ Armazenamento do navegador cheio — a alteração foi enviada ao servidor, mas não ficou gravada neste computador', 'error', 7000); } }
 function _loadNewRecs(){ try{ return JSON.parse(localStorage.getItem(SOL_NEW_KEY))||[]; } catch{ return []; } }
-function _saveNewRecs(arr){ try{ localStorage.setItem(SOL_NEW_KEY, JSON.stringify(arr)); } catch(e){} }
+function _saveNewRecs(arr){ if (window.__gravaSeguro) window.__gravaSeguro(SOL_NEW_KEY, JSON.stringify(arr), 'as solicitações criadas aqui');
+  else { try{ localStorage.setItem(SOL_NEW_KEY, JSON.stringify(arr)); } catch(e){ console.error('[gravar] FALHOU', SOL_NEW_KEY, e); } } }
 /* Remove registros com ID repetido de um array, mantendo SEMPRE a primeira
    ocorrência. Como sol_new entra antes do RAW_DATA na montagem, a versão do
    usuário tem prioridade. Blinda a tabela contra linhas duplicadas vindas de
@@ -16953,7 +17114,8 @@ function _dedupById(arr){
 // excluídas (mesmo as do RAW_DATA) não voltem ao recarregar.
 const SOL_DELETED_KEY = 'cnc_sol_deleted_v1';
 function _loadDeletedIds(){ try{ return JSON.parse(localStorage.getItem(SOL_DELETED_KEY))||[]; } catch{ return []; } }
-function _saveDeletedIds(ids){ try{ localStorage.setItem(SOL_DELETED_KEY, JSON.stringify(ids)); } catch(e){} }
+function _saveDeletedIds(ids){ if (window.__gravaSeguro) window.__gravaSeguro(SOL_DELETED_KEY, JSON.stringify(ids), 'a lista de solicitações apagadas');
+  else { try{ localStorage.setItem(SOL_DELETED_KEY, JSON.stringify(ids)); } catch(e){ console.error('[gravar] FALHOU', SOL_DELETED_KEY, e); } } }
 function _markDeleted(id){
   const ids = _loadDeletedIds();
   if (!ids.includes(String(id))) {
@@ -17084,27 +17246,173 @@ setTimeout(_updateUserNameUI, 200);
    - oldValue/newValue: valores formatados pra exibição
    - note: texto livre (só pra field='NOTE')
    Não registra se valor não mudou. */
+/* ── Histórico: completo na nuvem, recorte no navegador ─────────────
+   Cada entrada custa ~200 bytes. Guardando tudo dentro da solicitação,
+   o arquivo de modificações só crescia: 713 KB com 5 edições por forms,
+   4,6 MB com 30 — acima do que o navegador aceita. Agora a solicitação
+   carrega as últimas HIST_LOCAL entradas (é o que a tela mostra de
+   imediato) e o histórico inteiro vive em /sol_hist, buscado só quando
+   alguém abre a aba Histórico.                                       */
+/* Teto de 10 por forms não resolveria: 713 KB / 202 bytes dá 3.530
+   entradas em 785 solicitações, média de 4,5 — quase nenhuma passaria
+   de 10. O que ocupa é o acúmulo de coisa ANTIGA. Então a regra é dupla:
+   fica no navegador o que é recente E pouco; o resto vive na nuvem.  */
+const HIST_LOCAL = 5;
+const HIST_DIAS = 45;
+const HIST_FILA_KEY = 'cnc_sol_hist_fila_v1';   // entradas que ainda não subiram
+
 function _addHistory(rec, field, fieldLabel, oldValue, newValue, note) {
   if (!rec) return;
   if (!rec.history) rec.history = [];
   // Se não mudou (e não é uma nota), pula
   if (field !== 'NOTE' && String(oldValue||'') === String(newValue||'')) return;
-  rec.history.push({
+  const ent = {
     ts: new Date().toISOString(),
     user: _getUserName() || 'Anônimo',
     field, fieldLabel,
     old: String(oldValue||''),
     new: String(newValue||''),
     note: String(note||'')
-  });
+  };
+  rec.history.push(ent);
+  _histEnfileira(rec.id, ent);
+  /* O corte vem DEPOIS de enfileirar: nada sai daqui sem ter para onde ir. */
+  rec.history = _histRecorte(rec.history);
 }
 
+/* O que fica no navegador: as HIST_LOCAL últimas, e só as dos últimos
+   HIST_DIAS dias. Um forms mexido uma vez em março não guarda nada aqui. */
+function _histRecorte(lista) {
+  if (!Array.isArray(lista) || !lista.length) return lista || [];
+  const limite = Date.now() - HIST_DIAS * 86400000;
+  const recentes = lista.filter(h => {
+    const t = Date.parse(h && h.ts);
+    return Number.isFinite(t) && t >= limite;
+  });
+  return recentes.slice(-HIST_LOCAL);
+}
+window._histRecorte = _histRecorte;
+
+/* A fila é pequena e some assim que o servidor confirma. Se o navegador
+   fechar antes, ela sobrevive e sobe no próximo carregamento.        */
+function _histFila() {
+  try { const a = JSON.parse(localStorage.getItem(HIST_FILA_KEY) || '[]'); return Array.isArray(a) ? a : []; }
+  catch (e) { return []; }
+}
+/* Sem corte: a fila é a única cópia das entradas que ainda não subiram.
+   Cortar as mais antigas seria jogar fora justamente as que esperam há
+   mais tempo. Quem limita o tamanho é a migração, que trabalha em lotes. */
+function _histGravaFila(a) {
+  try { Object.getPrototypeOf(localStorage).setItem.call(localStorage, HIST_FILA_KEY, JSON.stringify(a)); }
+  catch (e) { console.warn('[hist] não consegui gravar a fila', e); }
+}
+function _histEnfileira(id, ent) {
+  const f = _histFila();
+  f.push({ id: String(id), e: ent });
+  _histGravaFila(f);
+  _histSobe();
+}
+let _histSubindo = false;
+function _histSobe() {
+  if (_histSubindo) return;
+  const f = _histFila();
+  if (!f.length) return;
+  if (typeof FB === 'undefined' || !FB.db || !FB.isConnected || !FB.isConnected()) return;
+  _histSubindo = true;
+  const lote = f.slice(0, 50);
+  Promise.all(lote.map(x => {
+    try { return FB.db.ref('sol_hist/' + _histChave(x.id)).push(x.e).then(() => true).catch(() => false); }
+    catch (e) { return Promise.resolve(false); }
+  })).then(oks => {
+    const resto = _histFila();
+    const sobrou = resto.filter((x, i) => i >= lote.length || !oks[i]);
+    _histGravaFila(sobrou);
+    _histSubindo = false;
+    /* Houve progresso e ainda sobrou: continua já, sem esperar meio
+       segundo por lote — nove entradas levariam três segundos assim. */
+    if (sobrou.length && oks.some(Boolean)) setTimeout(_histSobe, 30);
+  }).catch(() => { _histSubindo = false; });
+}
+/* O Firebase não aceita . # $ [ ] / em chave — e há ids como "467.A". */
+function _histChave(id) { return String(id).replace(/[.#$\[\]\/]/g, '_'); }
+
+/* Busca o histórico inteiro de uma solicitação, só quando a aba é aberta. */
+function _histCompleto(id) {
+  if (typeof FB === 'undefined' || !FB.loadPath) return Promise.resolve(null);
+  return FB.loadPath('sol_hist/' + _histChave(id))
+    .then(v => {
+      if (!v || typeof v !== 'object') return null;
+      return Object.keys(v).map(k => v[k]).filter(Boolean);
+    })
+    .catch(() => null);
+}
+/* ── Mudança única: tira da memória do navegador o histórico antigo ──
+   Roda uma vez por navegador. Enfileira TODAS as entradas para /sol_hist
+   e só depois recorta o que fica local — o corte nunca acontece antes de
+   a entrada ter para onde ir. Se a nuvem estiver fora, a fila espera e a
+   próxima abertura retoma; nada é perdido no caminho.                */
+const HIST_MIG_KEY = 'cnc_sol_hist_migrado_v1';
+function _histMigra() {
+  try {
+    if (localStorage.getItem(HIST_MIG_KEY)) return;
+    const m = _loadMods();
+    const ids = Object.keys(m);
+    let entradas = 0, mexidos = 0, antes = (localStorage.getItem(SOL_MODS_KEY) || '').length;
+    const fila = _histFila();
+    /* Em lotes: a fila é o único lugar dessas entradas até o servidor
+       confirmar, e uma fila gigante não cabe no navegador apertado.
+       O que ficar para trás é migrado na próxima rodada.             */
+    const TETO = 400;
+    let faltou = false;
+    for (const id of ids) {
+      const h = m[id] && m[id].history;
+      if (!Array.isArray(h) || !h.length) continue;
+      const fica = _histRecorte(h);
+      if (fica.length === h.length) continue;      // já está pequeno: não mexe
+      if (entradas + h.length > TETO && entradas > 0) { faltou = true; break; }
+      h.forEach(e => { fila.push({ id: String(id), e: e }); entradas++; });
+      m[id].history = fica;
+      mexidos++;
+    }
+    if (!mexidos) { localStorage.setItem(HIST_MIG_KEY, '1'); return; }
+    _histGravaFila(fila);
+    _saveMods(m);
+    /* Repõe o recorte nos registros já carregados na memória da página. */
+    try { if (typeof data !== 'undefined' && Array.isArray(data))
+      data.forEach(r => { if (m[r.id] && Array.isArray(m[r.id].history)) r.history = m[r.id].history; }); } catch (e) {}
+    const depois = (localStorage.getItem(SOL_MODS_KEY) || '').length;
+    if (!faltou) localStorage.setItem(HIST_MIG_KEY, '1');
+    console.log('[hist] ' + entradas + ' entradas de ' + mexidos + ' solicitações foram para a nuvem — '
+      + Math.round((antes - depois) / 1024) + ' KB liberados'
+      + (faltou ? ' (ainda falta: continua quando a fila esvaziar)' : ''));
+    _histSobe();
+    /* Só continua depois que o servidor confirmar o lote — assim a fila
+       nunca cresce além do que o navegador aguenta.                  */
+    if (faltou) {
+      const esperar = setInterval(() => {
+        if (_histFila().length) return;
+        clearInterval(esperar);
+        _histMigra();
+      }, 3000);
+    }
+  } catch (e) { console.warn('[hist] migração', e); }
+}
+window._histMigra = _histMigra;
+window._histSobe = _histSobe;
+window._histCompleto = _histCompleto;
+window._histFila = _histFila;
+
 /* Renderiza o HTML do histórico de uma solicitação (mais recente primeiro). */
-function renderHistory(r) {
-  if (!r.history || !r.history.length) {
-    return '<div class="sol-hist-empty">Nenhuma mudança registrada ainda. Edite qualquer campo ou adicione uma nota abaixo.</div>';
+/* Mostra o que está aqui na hora e oferece o resto, que vive na nuvem.
+   A busca só acontece se a pessoa pedir — é o que mantém o arquivo
+   pequeno sem esconder nada.                                         */
+function renderHistory(r, completo) {
+  const lista = Array.isArray(completo) ? completo : (r.history || []);
+  if (!lista.length) {
+    return '<div class="sol-hist-empty">Nenhuma mudança registrada ainda. Edite qualquer campo ou adicione uma nota abaixo.</div>'
+      + _histBotaoMais(r, completo);
   }
-  const sorted = [...r.history].sort((a,b) => String(b.ts).localeCompare(String(a.ts)));
+  const sorted = [...lista].sort((a,b) => String(b.ts).localeCompare(String(a.ts)));
   return sorted.map(h => {
     const d = new Date(h.ts);
     const dStr = isNaN(d.getTime()) ? '—' :
@@ -17124,8 +17432,31 @@ function renderHistory(r) {
       <div class="sol-hist-meta">${dStr} · <b>${userTxt}</b></div>
       <div class="sol-hist-change"><b>${labelTxt}:</b> ${oldTxt} → ${newTxt}</div>
     </div>`;
-  }).join('');
+  }).join('') + _histBotaoMais(r, completo);
 }
+
+function _histBotaoMais(r, completo) {
+  if (completo) return '<div class="sol-hist-empty">Histórico completo, da nuvem.</div>';
+  return '<div class="sol-hist-mais"><button onclick="__histVerTudo(\'' + String(r.id).replace(/'/g, "\\'")
+    + '\')">Ver histórico completo</button>'
+    + '<span>aqui ficam só as alterações recentes; o restante está na nuvem</span></div>';
+}
+
+window.__histVerTudo = function (id) {
+  const el = document.getElementById('dHistory');
+  if (!el) return;
+  el.innerHTML = '<div class="sol-hist-empty">Buscando na nuvem…</div>';
+  const r = (typeof Sol !== 'undefined' && Sol.getData) ? Sol.getData().find(x => String(x.id) === String(id)) : null;
+  _histCompleto(id).then(tudo => {
+    if (!r) return;
+    if (!tudo) { el.innerHTML = renderHistory(r)
+      + '<div class="sol-hist-empty">Não consegui buscar na nuvem agora — mostrando o que está neste navegador.</div>'; return; }
+    /* O que está aqui e ainda não subiu entra junto, sem repetir. */
+    const vistos = new Set(tudo.map(h => h.ts + '|' + h.field + '|' + h.new));
+    (r.history || []).forEach(h => { const k = h.ts + '|' + h.field + '|' + h.new; if (!vistos.has(k)) tudo.push(h); });
+    el.innerHTML = renderHistory(r, tudo);
+  });
+};
 
 /* Adiciona uma nota livre ao histórico. Chamada pelo botão "📝 Adicionar nota" no detalhe. */
 function addNote(id) {
@@ -18616,6 +18947,29 @@ function prBadge(pr) {
   return `<span class="sol-badge ${cl}">${lbl}</span>`;
 }
 
+/* A Carteira ignora quantidade fora de 1..500 e planeja como 1 peça.
+   São 11 solicitações hoje, e pelo menos três parecem lotes legítimos
+   (#89 com 1.594,78, #445 com 720, #420 com 66.666) sendo subestimadas.
+   O valor NÃO é alterado aqui — quem decide é quem abriu o forms; o app
+   só para de errar em silêncio.                                      */
+const QT_TETO = 500;
+function qtSuspeita(r) {
+  const bruto = String(r && r.qt != null ? r.qt : '').trim();
+  if (!bruto) return '';
+  const n = parseInt(bruto, 10);
+  if (!Number.isFinite(n) || n <= 0) return 'quantidade não numérica';
+  if (n > QT_TETO) return 'quantidade acima de ' + QT_TETO + ' — parece código SAP no campo errado';
+  if (/[.,]/.test(bruto)) return 'quantidade com decimal — o planejamento usa só o inteiro';
+  return '';
+}
+function qtAviso(r) {
+  const m = qtSuspeita(r);
+  if (!m) return '';
+  return '<span class="sol-qt-ruim" title="' + m.replace(/"/g, '&quot;')
+    + '. O Planejamento do Mês planeja este forms como 1 peça até o valor ser revisto.">⚠ qtd</span>';
+}
+window.qtSuspeita = qtSuspeita;
+
 function stBadge(st) {
   /* Faltavam Encerrado, Fila e Em Produção: caíam no amarelo de Pendente,
      e aí o que já acabou ficava igual ao que nem começou.            */
@@ -18967,7 +19321,7 @@ function render() {
       <td class="sol-td-dt">${fmtDt(r.dt)||'—'}</td>
       <td class="sol-td-peca"><div class="sol-1l" title="${(r.p||'').replace(/"/g,'&quot;')}${r.sl ? ' — ' + String(r.sl).replace(/"/g,'&quot;') : ''}">${cap(r.p)||'—'}<span class="sol-sub2">${[r.sl, r.cd && r.cd !== '0' ? '📐 ' + r.cd : ''].filter(Boolean).map(x => ' · ' + String(x).replace(/</g,'&lt;')).join('')}</span></div></td>
       <td class="sol-td-pl"><div class="sol-1l">${r.pl||'—'}${r.ar ? ` <span class="sol-sub2">${r.ar}</span>` : ''}</div></td>
-      <td class="t-qt" style="text-align:center">${r.qt||'—'}${_partial?` <span style="color:#b45309;font-size:10px" title="Realizado: ${_qtReal} · Faltam: ${_qtPlan-_qtReal}">(${_qtReal}/${_qtPlan})</span>`:''}</td>
+      <td class="t-qt" style="text-align:center">${r.qt||'—'}${qtAviso(r)}${_partial?` <span style="color:#b45309;font-size:10px" title="Realizado: ${_qtReal} · Faltam: ${_qtPlan-_qtReal}">(${_qtReal}/${_qtPlan})</span>`:''}</td>
       <td class="t-cu" style="white-space:nowrap">${fmt(r.cu)}</td>
       <td>${prBadge(r.pr)}</td>
       <td class="t-dtp" style="white-space:nowrap;color:var(--tx2)">${fmtDt(r.dtp)||'—'}</td>
@@ -24025,6 +24379,10 @@ async function fbBootstrap() {
            Agora cada chave falha sozinha e o resto continua.        */
         try {
           origSet.call(localStorage, lsKey, JSON.stringify(valor));
+          /* Carimba só quando o que ficou aqui é exatamente o do servidor. A
+             mescla da carteira guarda coisa que o servidor não tem, e dizer
+             que ela está confirmada esconderia dado que ainda precisa subir. */
+          if (valor === serverVal && FB.marcaAck) FB.marcaAck(fbPath, valor);
           console.log('[FB] Baixado:', fbPath);
         } catch (eq) {
           console.warn('[FB] não coube:', fbPath, '— liberando espaço e tentando de novo');
@@ -24174,10 +24532,26 @@ async function fbBootstrap() {
           try { carteiraRender(); } catch (e) {}
         }
       } else if (val === null || val === undefined) {
-        // Servidor está vazio — limpa local também
-        origSet.call(localStorage, lsKey, JSON.stringify(fbPath === '/sol_mods' || fbPath === '/config' ? {} : []));
+        /* Servidor vazio. Isso só quer dizer "alguém apagou" quando o que
+           está aqui já tinha chegado lá. Se ainda não chegou, o vazio é o
+           servidor que não recebeu — e gravar [] aqui apaga dado que existe
+           só neste navegador. Foi assim que a carteira do mês desapareceu;
+           o conserto valia para dois caminhos e agora vale para todos.  */
+        if (_ecoAtropela(fbPath, lsKey)) {
+          _ecoReenvia(fbPath, lsKey, 'servidor vazio');
+        } else {
+          const limpo = (fbPath === '/sol_mods' || fbPath === '/config') ? {} : [];
+          origSet.call(localStorage, lsKey, JSON.stringify(limpo));
+          if (FB.marcaAck) FB.marcaAck(fbPath, limpo);
+        }
+      } else if (_ecoAtropela(fbPath, lsKey)) {
+        /* O eco chegou enquanto uma edição daqui ainda não foi confirmada.
+           Aplicá-lo desfaz essa edição na cara da pessoa. O que vale é o
+           local; ele sobe agora e o próximo eco, já com ela dentro, entra. */
+        _ecoReenvia(fbPath, lsKey, 'edição local ainda não confirmada');
       } else {
         origSet.call(localStorage, lsKey, JSON.stringify(val));
+        if (FB.marcaAck) FB.marcaAck(fbPath, val);
       }
       console.log('[FB] Listener disparou:', fbPath, '→ localStorage atualizado');
 
@@ -24206,7 +24580,13 @@ async function fbBootstrap() {
     });
   });
 
+  /* O catch-up espera por isto: reenviar antes do download acabar é
+     reenviar cópia velha por cima do servidor. */
+  window.__fbBootstrapPronto = true;
   console.log('[FB] Bootstrap completo. Listeners ativos.');
+  /* O histórico antigo sai do navegador assim que há para onde mandá-lo. */
+  try { if (typeof _histMigra === 'function') _histMigra(); } catch (e) {}
+  try { if (typeof _histSobe === 'function') setInterval(_histSobe, 20000); } catch (e) {}
 
   /* Faxina preventiva: com o armário acima de 70%, apara só o histórico
      (fotos antigas da carteira e meses de mais de 18 meses). Nunca mexe
@@ -24252,6 +24632,15 @@ async function fbBootstrap() {
   }catch(e){}
   } catch (e) {
     FB.reportError('bootstrap', e);
+  } finally {
+    /* O portão abre em QUALQUER saída, não só no sucesso. O bootstrap
+       desiste cedo em três casos (sem SDK, sem conexão em 5 s, regras
+       barrando) e, se o portão ficasse fechado neles, uma conexão que
+       chegasse depois encontraria o espelho calado: a pessoa editaria a
+       tarde inteira sem nada subir. Fechado ele fica só durante a janela
+       em que o download ainda pode estar em curso; depois disso quem
+       protege são a confirmação e a mescla. */
+    window.__fbBootstrapPronto = true;
   }
 }
 
@@ -24259,6 +24648,30 @@ async function fbBootstrap() {
    Cada parte carrega _ts; a mais nova vence. Parte que só existe de um
    lado é mantida. _del marca apagada de propósito — sem isso, apagar
    aqui seria desfeito pelo eco do servidor.                          */
+/* ─── O eco do servidor pode passar por cima do que está aqui? ───
+   Só pode quando o conteúdo local já foi confirmado pelo servidor. Enquanto
+   não foi, ele é mais novo do que qualquer coisa que o servidor devolva.  */
+function _ecoAtropela(fbPath, lsKey) {
+  try {
+    if (typeof FB === 'undefined' || !FB.naoEnviado) return false;
+    if (localStorage.getItem(lsKey) === null) return false;
+    return FB.naoEnviado(fbPath);
+  } catch (e) { return false; }
+}
+/* Reenvia o que está aqui, no lugar de aceitar o eco. Com freio: enquanto a
+   subida não é confirmada chegam vários ecos, e cada um pediria uma escrita. */
+const _ecoUltimo = {};
+function _ecoReenvia(fbPath, lsKey, motivo) {
+  console.warn('[FB] ⬆ ' + fbPath + ': eco ignorado — ' + motivo + ' (reenviando o que está aqui)');
+  const agora = Date.now();
+  if (agora - (_ecoUltimo[fbPath] || 0) < 3000) return;
+  _ecoUltimo[fbPath] = agora;
+  let local = null;
+  try { local = JSON.parse(localStorage.getItem(lsKey) || 'null'); } catch (e) { return; }
+  if (local === null) return;
+  try { FB.save(fbPath, local); } catch (e) { console.warn('[FB] erro ao reenviar', fbPath, e); }
+}
+
 function _fbMergePorTs(local, servidor, path) {
   const L = (local && typeof local === 'object' && !Array.isArray(local)) ? local : {};
   const S = (servidor && typeof servidor === 'object' && !Array.isArray(servidor)) ? servidor : {};
@@ -24550,7 +24963,7 @@ function _dashCollect(){
   const dy = (document.getElementById('dashDy') || {}).value || '';
   const hasDateFilter = !!(yr || months.length || dy);
   const soProg = !!window._dashSoProg;      // "📅 Só programadas": exige data de produção
-  const soCart = !!window._dashSoCarteira;  // "📋 Só a carteira": só o que está na carteira do mês
+  const soCart = !!window._dashSoCarteira;  // "📋 Só o planejamento": só o que está na carteira do mês
   const cartRefs = soCart ? _dashCarteiraRefs(_dashCarteiraMes()) : null;
   const monthSet = months.length ? new Set(months) : null;
   solData.forEach(r => {
@@ -24681,7 +25094,7 @@ function _dashPintaProg(){
     c.classList.toggle('on', !!window._dashSoCarteira);
     const m = _dashCarteiraMes();
     c.style.display = m ? '' : 'none';
-    if (m) c.textContent = '📋 Só a carteira de ' + _dashMesNome(m);
+    if (m) c.textContent = '📋 Só o planejamento de ' + _dashMesNome(m);
   }
 }
 function dashToggleCarteira(){
@@ -24808,8 +25221,8 @@ function _dashRenderKPIs(data){
     </div>
     ${cMes ? `
     <div class="dash-kpi kpi-simul" onclick="dashToggleCarteira()" style="cursor:pointer"
-         title="Projeção: o que a Torre economiza se fizer o que está na Carteira do mês. Clique para ver só esses forms.">
-      <div class="dash-kpi-label">SIMULAÇÃO · CARTEIRA ${_dashMesNome(cMes).toUpperCase()}</div>
+         title="Projeção: o que a Torre economiza se fizer o que está no Planejamento do mês. Clique para ver só esses forms.">
+      <div class="dash-kpi-label">SIMULAÇÃO · PLANEJAMENTO ${_dashMesNome(cMes).toUpperCase()}</div>
       <div class="dash-kpi-value" style="color:${savCart>=0?'#22d3ee':'#ef4444'}">${_dashFmtBRL(savCart)}</div>
       <div class="dash-kpi-sub">${naCart.length} forms${comCusto.length < naCart.length
           ? ` · <span style="color:#f59e0b">${naCart.length - comCusto.length} sem custo preenchido</span>` : ' · todos com custo'}</div>
@@ -26480,7 +26893,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 12/11/2026 10:58</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 12/11/2026 15:40</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
@@ -28331,7 +28744,7 @@ body.tema-escuro .ct-min-man .ct-tmp-pe>b{color:#67E8F9}
    Aqui a fila é cortada em três:
      • PRONTOS  — material chegou. É só daqui que se monta o mês.
      • SEM MATERIAL — dá para planejar, mas não vai para a máquina.
-     • CARTEIRA — o que você escolheu para o mês, com a capacidade medida.
+     • PLANEJAMENTO — o que você escolheu para o mês, com a capacidade medida.
 
    A ordem sugerida é por RODÍZIO ENTRE AS FÁBRICAS: uma de cada vez, em
    volta, para que nenhuma planta coma o mês inteiro. Dentro de cada
@@ -28377,7 +28790,7 @@ function ctGrava(t) {
   if (typeof ctAviso === 'function') {
     ctAviso('⚠ Não consegui gravar — memória do navegador cheia',
       'O navegador reserva cerca de 5 MB para o app e esse limite foi atingido, então '
-      + '<b>esta alteração não foi salva</b>.<br><br>Já apaguei as versões antigas da carteira para '
+      + '<b>esta alteração não foi salva</b>.<br><br>Já apaguei as versões antigas do planejamento para '
       + 'abrir espaço e ainda não coube. O que ocupa mais é o histórico local de outros módulos. '
       + 'Para liberar: feche e reabra o app (ele recarrega os dados da nuvem) ou limpe os dados '
       + 'do site nas configurações do navegador — nada se perde, tudo está no Firebase.');
@@ -28913,12 +29326,12 @@ function ctCabecalho(todas, prontos, travados, carteira) {
     '<div class="ct-kpi"><span>' + ctEsc(r) + '</span><b' + (cor ? ' style="color:' + cor + '"' : '') + '>' + v + '</b>'
     + '<small>' + ctEsc(s) + '</small></div>';
   return '<div class="ct-head">'
-    + '<div><h1>Carteira do mês</h1>'
+    + '<div><h1>Planejamento do mês</h1>'
     + '<p>Escolha aqui o que a usinagem vai fazer em <b>' + ctEsc(ctMesNome(ctMes)) + '</b>. '
     + 'Entra tudo que não está encerrado; o que ainda espera material vem marcado.</p></div>'
     + '<div class="ct-head-acoes">'
     +   '<input type="month" value="' + ctEsc(ctMes) + '" onchange="ctTrocaMes(this.value)">'
-    +   '<button class="ct-btn ct-btn-sec" onclick="ctSugerir()">✨ Sugerir carteira</button>'
+    +   '<button class="ct-btn ct-btn-sec" onclick="ctSugerir()">✨ Sugerir planejamento</button>'
     +   '<button class="ct-btn ct-btn-sec" onclick="ctListaCompleta()">📋 Lista completa</button>'
     +   '<button class="ct-btn ct-btn-sec" onclick="ctSalvarVersao()">💾 Salvar como está</button>'
     +   '<button class="ct-btn ct-btn-sec" onclick="ctParaProgramacao()">▶ Mandar para a programação</button>'
@@ -28947,7 +29360,7 @@ function ctPainelCapacidade(cap, usoT, capT, usoC, capC, n, estim) {
   return '<div class="ct-painel ct-cap">'
     + '<h2>Cabe no mês?</h2>'
     + barra('Torno', usoT, capT) + barra('Centro', usoC, capC)
-    + '<div class="ct-cap-resumo">' + n + ' forms na carteira'
+    + '<div class="ct-cap-resumo">' + n + ' forms no planejamento'
     + (estim ? '<span class="ct-aviso">' + estim + ' sem padrão na Biblioteca — contados por estimativa de '
         + CT_MIN_PADRAO + ' min</span>' : '') + '</div>'
     + '<div class="ct-sep">Capacidade do mês</div>'
@@ -29018,7 +29431,7 @@ function ctReguaHistorica(capT, capC) {
   return '<div class="ct-regua' + (exagero ? ' ct-regua-alerta' : '') + '">'
     + 'Nos últimos ' + h.meses + ' meses a usinagem fechou <b>' + h.forms + ' forms</b> e <b>' + h.horas + ' h</b> por mês.'
     + (exagero ? '<br><span>A capacidade acima dá ' + calc + ' h — bem mais do que isso. '
-        + 'Confira os técnicos por turno e os minutos úteis, senão a carteira vai sair grande demais.</span>' : '')
+        + 'Confira os técnicos por turno e os minutos úteis, senão o planejamento vai sair grande demais.</span>' : '')
     + '</div>';
 }
 
@@ -29036,7 +29449,7 @@ function ctLinhaHtml(l, naCarteira) {
     : '';
   return '<div class="ct-item' + (naCarteira ? ' ct-item-on' : '')
     + (!l.pronto ? ' ct-item-falta' : '') + '">'
-    + '<button class="ct-tog" title="' + (naCarteira ? 'Tirar da carteira' : 'Pôr na carteira') + '" '
+    + '<button class="ct-tog" title="' + (naCarteira ? 'Tirar do planejamento' : 'Pôr no planejamento') + '" '
     + 'onclick="ctAlterna(\'' + ctEsc(l.id) + '\')">' + (naCarteira ? '−' : '+') + '</button>'
     + '<div class="ct-item-main">'
     +   '<div class="ct-item-top"><b>#' + ctEsc(l.id) + '</b> ' + ctStatusHtml(l.status) + selo + falta
@@ -29095,13 +29508,13 @@ function ctPainelCarteira(carteira, usoT, usoC) {
   const minVis = vis.reduce((a, l) => { const c = ctConsumo(l); return a + c.TORNO + c.CENTRO; }, 0);
 
   return '<div class="ct-painel">'
-    + '<div class="ct-sub"><h2>Na carteira de ' + ctEsc(ctMesNome(ctMes)) + '</h2>'
+    + '<div class="ct-sub"><h2>No planejamento de ' + ctEsc(ctMesNome(ctMes)) + '</h2>'
     + '<span>' + carteira.length + ' forms · ' + ctH(usoT + usoC) + ' de máquina'
     + (semMat ? ' · <b style="color:#B45309">' + semMat + '</b> sem material' : '')
     + (carteira.length ? ' <button class="ct-link" onclick="ctEsvazia()">esvaziar</button>' : '') + '</span></div>'
     + (carteira.length
         ? '<div class="ct-filtros">'
-          + '<input id="ctBuscaCart" placeholder="🔎 buscar na carteira por nº, peça ou fábrica" '
+          + '<input id="ctBuscaCart" placeholder="🔎 buscar no planejamento por nº, peça ou fábrica" '
           +   'value="' + ctEsc(ctBuscaCart) + '" autocomplete="off" oninput="ctSetBuscaCart(this.value)">'
           + '<select onchange="ctSetFabCart(this.value)"><option value="">Todas as fábricas</option>'
           +   fabs.map(f => '<option value="' + ctEsc(f) + '"' + (f === ctFabCart ? ' selected' : '') + '>'
@@ -29118,8 +29531,8 @@ function ctPainelCarteira(carteira, usoT, usoC) {
                 + ' forms · ' + ctH(minVis) + '</div>' : '')
           + (vis.length
               ? '<div class="ct-lista">' + vis.map(l => ctLinhaHtml(l, true)).join('') + '</div>'
-              : '<div class="ct-vazio">Nenhum forms da carteira bate com esse filtro.</div>')
-        : '<div class="ct-vazio">Carteira vazia. Use <b>✨ Sugerir carteira</b> para o app montar uma pelo rodízio '
+              : '<div class="ct-vazio">Nenhum forms do planejamento bate com esse filtro.</div>')
+        : '<div class="ct-vazio">Planejamento vazio. Use <b>✨ Sugerir planejamento</b> para o app montar um pelo rodízio '
           + 'entre as fábricas, ou vá marcando no <b>+</b> da lista abaixo.</div>')
     + '</div>';
 }
@@ -29140,7 +29553,7 @@ function ctPainelProntos(visiveis, prontos, fabs) {
   const sts = [...new Set(prontos.map(l => l.status).filter(Boolean))].sort();
   const comMat = prontos.filter(l => l.pronto).length;
   return '<div class="ct-painel">'
-    + '<div class="ct-sub"><h2>Solicitações fora da carteira</h2>'
+    + '<div class="ct-sub"><h2>Solicitações fora do planejamento</h2>'
     + '<span>' + prontos.length + ' forms · <b>' + comMat + '</b> com material em casa · '
     + (prontos.length - comMat) + ' ainda esperando</span></div>'
     + '<div class="ct-filtros">'
@@ -29219,9 +29632,9 @@ function ctAlterna(id) {
 }
 function ctEsvazia() {
   const n = (ctDoMes(ctMes).refs || []).length;
-  if (!n) { ctAviso('Carteira vazia', 'Não há nada para tirar de ' + ctEsc(ctMesNome(ctMes)) + '.'); return; }
-  ctConfirma('Esvaziar a carteira',
-    'Tirar os <b>' + n + ' forms</b> da carteira de ' + ctEsc(ctMesNome(ctMes)) + '?'
+  if (!n) { ctAviso('Planejamento vazio', 'Não há nada para tirar de ' + ctEsc(ctMesNome(ctMes)) + '.'); return; }
+  ctConfirma('Esvaziar o planejamento',
+    'Tirar os <b>' + n + ' forms</b> do planejamento de ' + ctEsc(ctMesNome(ctMes)) + '?'
     + '<br><br>Nenhuma solicitação é apagada — elas só saem da seleção do mês e voltam para "Prontos para usinar". '
     + 'As horas por fábrica continuam como estão.',
     'Esvaziar', () => {
@@ -29277,8 +29690,8 @@ function ctSugerir() {
     return;
   }
   if ((d.refs || []).length) {
-    ctConfirma('Refazer a carteira',
-      'Isso substitui a carteira atual de ' + ctEsc(ctMesNome(ctMes)) + ', que tem <b>' + d.refs.length + ' forms</b>.',
+    ctConfirma('Refazer o planejamento',
+      'Isso substitui o planejamento atual de ' + ctEsc(ctMesNome(ctMes)) + ', que tem <b>' + d.refs.length + ' forms</b>.',
       'Refazer', () => ctMontaSugestao(todas, prontos));
     return;
   }
@@ -29315,7 +29728,7 @@ function ctMontaSugestao(todas, prontos) {
   const nMat = semMat.size;
   const minMat = todas.filter(l => semMat.has(l.id))
     .reduce((a, l) => { const c = ctConsumo(l); return a + c.TORNO + c.CENTRO; }, 0);
-  ctAviso('✨ Carteira de ' + ctMesNome(ctMes) + ' montada',
+  ctAviso('✨ Planejamento de ' + ctMesNome(ctMes) + ' montado',
     '<b>' + escolhidos.length + ' forms</b> · ' + ctH(somaMin) + ' de '
     + Math.round(somaTeto / 60) + ' h disponíveis · <b>' + pcGeral + '%</b> das horas ocupadas'
     + '<table class="ct-dlg-tab">' + fabs.map(linha).join('') + '</table>'
@@ -29325,7 +29738,7 @@ function ctMontaSugestao(todas, prontos) {
           + '<b>' + nMat + ' desses ' + (nMat === 1 ? 'forms ainda espera' : 'forms ainda esperam')
           + ' material</b> (' + ctH(minMat) + ' do mês). O material em casa não dava para encher as horas, '
           + 'então completei com a fila de quem está travado — é a lista de compras que precisa chegar '
-          + 'para o mês fechar. Eles aparecem marcados na carteira e não vão para a programação '
+          + 'para o mês fechar. Eles aparecem marcados no planejamento e não vão para a programação '
           + 'enquanto o material não chegar.</div>'
         : '')
     + (apertados.length
@@ -29354,7 +29767,7 @@ function ctItensDaCarteira(mes) {
 }
 
 function ctTabelaItens(itens) {
-  if (!itens.length) return '<div class="ct-vazio">Nada na carteira deste mês.</div>';
+  if (!itens.length) return '<div class="ct-vazio">Nada no planejamento deste mês.</div>';
   let fabAtual = null, tot = 0;
   const linhas = itens.map((l, i) => {
     const c = ctConsumo(l);
@@ -29386,7 +29799,7 @@ function ctTabelaItens(itens) {
 function ctListaCompleta() {
   const itens = ctItensDaCarteira();
   const vs = ctVersoes(ctMes);
-  ctDialogo('Carteira de ' + ctMesNome(ctMes) + ' — lista completa',
+  ctDialogo('Planejamento de ' + ctMesNome(ctMes) + ' — lista completa',
     ctTabelaItens(itens)
     + (vs.length
         ? '<div class="ct-vers"><b>Versões salvas <span class="ct-vers-kb">'
@@ -29429,14 +29842,14 @@ function ctApagaTodasVersoes() {
   ctFechaDlg();
   ctConfirma('Apagar todas as versões salvas',
     'Isso apaga as <b>' + qt + ' fotos</b> guardadas de <b>todos os meses</b> (' + ctEsc(kb) + ') e '
-    + 'libera essa memória do navegador.<br><br>A carteira de cada mês — os forms que estão nela, '
+    + 'libera essa memória do navegador.<br><br>O planejamento de cada mês — os forms que estão nele, '
     + 'as horas e os tempos — <b>não é tocada</b>. Só o histórico de fotos se perde.',
     'Apagar tudo', () => {
       const t2 = ctTudo();
       Object.keys(t2).forEach(m => { if (t2[m]) delete t2[m].versoes; });
       ctGrava(t2);
       carteiraRender();
-      ctAviso('✓ Versões apagadas', qt + ' foto(s) removida(s). A carteira continua como estava.');
+      ctAviso('✓ Versões apagadas', qt + ' foto(s) removida(s). O planejamento continua como estava.');
     }, true);
 }
 window.ctApagaTodasVersoes = ctApagaTodasVersoes;
@@ -29446,13 +29859,13 @@ window.ctKbVersoes = ctKbVersoes;
 function ctVersoes(mes) { const d = ctDoMes(mes || ctMes); return Array.isArray(d.versoes) ? d.versoes : []; }
 function ctSalvarVersao() {
   const itens = ctItensDaCarteira();
-  if (!itens.length) { ctAviso('Carteira vazia', 'Não há o que salvar em <b>' + ctEsc(ctMesNome(ctMes)) + '</b>.'); return; }
+  if (!itens.length) { ctAviso('Planejamento vazio', 'Não há o que salvar em <b>' + ctEsc(ctMesNome(ctMes)) + '</b>.'); return; }
   const agora = new Date();
   const dd = String(agora.getDate()).padStart(2, '0') + '/' + String(agora.getMonth() + 1).padStart(2, '0');
   const hh = String(agora.getHours()).padStart(2, '0') + ':' + String(agora.getMinutes()).padStart(2, '0');
-  ctDialogo('Salvar a carteira como está',
+  ctDialogo('Salvar o planejamento como está',
     'Guarda uma foto de <b>' + itens.length + ' forms</b> com o tempo e a máquina de cada um, '
-    + 'do jeito que estão agora. Serve para comparar depois, ou para voltar atrás se a carteira mudar.'
+    + 'do jeito que estão agora. Serve para comparar depois, ou para voltar atrás se o planejamento mudar.'
     + '<div style="margin-top:12px"><label style="font-size:11px;color:var(--txt3);display:block;margin-bottom:5px">'
     + 'Nome desta versão</label>'
     + '<input id="ctVerNome" value="' + ctEsc(dd + ' ' + hh) + '" '
@@ -29545,8 +29958,8 @@ function ctRestauraVersao(id) {
   ctFechaDlg();
   const atual = (ctDoMes(ctMes).refs || []).length;
   ctConfirma('Restaurar “' + v.nome + '”',
-    'A carteira de <b>' + ctEsc(ctMesNome(ctMes)) + '</b> volta a ter os <b>' + v.itens.length
-    + ' forms</b> dessa versão. A carteira de agora, com ' + atual + ', é substituída — '
+    'O planejamento de <b>' + ctEsc(ctMesNome(ctMes)) + '</b> volta a ter os <b>' + v.itens.length
+    + ' forms</b> dessa versão. O planejamento de agora, com ' + atual + ', é substituída — '
     + 'salve antes se quiser guardá-la.<br><br>Os tempos de cada peça não são mexidos: '
     + 'voltam os forms, não os minutos congelados.',
     'Restaurar', () => {
@@ -29554,7 +29967,7 @@ function ctRestauraVersao(id) {
       d.refs = _ids;
       ctSalvaMes(ctMes, d);
       carteiraRender();
-      ctAviso('✓ Carteira restaurada', '<b>' + ctEsc(v.nome) + '</b> voltou: ' + v.itens.length + ' forms.');
+      ctAviso('✓ Planejamento restaurado', '<b>' + ctEsc(v.nome) + '</b> voltou: ' + v.itens.length + ' forms.');
     });
 }
 function ctApagaVersao(id) {
@@ -29562,7 +29975,7 @@ function ctApagaVersao(id) {
   if (!v) return;
   ctFechaDlg();
   ctConfirma('Apagar “' + v.nome + '”',
-    'Essa foto da carteira some para sempre. A carteira de agora não é afetada.',
+    'Essa foto do planejamento some para sempre. O planejamento de agora não é afetado.',
     'Apagar', () => {
       const d = ctDoMes(ctMes);
       d.versoes = ctVersoes(ctMes).filter(x => x.id !== id);
@@ -29701,8 +30114,8 @@ function ctProgCandidatos() {
 function ctParaProgramacao() {
   const { comTempo, chute, semMaterial } = ctProgCandidatos();
   if (!comTempo.length && !chute.length) {
-    ctAviso('Carteira vazia', 'Não há nada em <b>' + ctEsc(ctMesNome(ctMes)) + '</b> para mandar. '
-      + 'Use <b>✨ Sugerir carteira</b> ou marque forms no <b>+</b>.');
+    ctAviso('Planejamento vazio', 'Não há nada em <b>' + ctEsc(ctMesNome(ctMes)) + '</b> para mandar. '
+      + 'Use <b>✨ Sugerir planejamento</b> ou marque forms no <b>+</b>.');
     return;
   }
   const st = ctProgEstado();
@@ -29710,14 +30123,14 @@ function ctParaProgramacao() {
   const ja = new Set((st.reqs || []).map(r => nk(r.ref)));
   const novos = comTempo.filter(l => !ja.has(nk(l.id))).length;
   ctDialogo('Mandar para a programação',
-    '<b>' + comTempo.length + ' forms</b> da carteira de ' + ctEsc(ctMesNome(ctMes))
+    '<b>' + comTempo.length + ' forms</b> do planejamento de ' + ctEsc(ctMesNome(ctMes))
     + ' têm tempo de execução e vão para a lista de requisições da <b>Programação</b>, '
     + 'com os minutos abertos em torno e centro. Lá você arrasta cada um para o dia, o turno e a máquina.'
     + '<div style="margin-top:10px;color:var(--txt3);font-size:11.5px;line-height:1.6">'
     + novos + ' entram como novos · ' + (comTempo.length - novos) + ' já estão lá e só têm o tempo atualizado.'
     + ((semMaterial && semMaterial.length)
         ? '<br><span style="color:#f59e0b">' + semMaterial.length
-          + ' forms da carteira ficam de fora: o material ainda não chegou.</span>' : '')
+          + ' forms do planejamento ficam de fora: o material ainda não chegou.</span>' : '')
     + '</div>'
     + (chute.length
         ? '<div style="border-top:1px solid var(--border2);margin-top:12px;padding-top:11px">'
@@ -29748,7 +30161,7 @@ function ctEnviaProg() {
     const c = ctConsumo(l);
     const base = {
       ref: String(l.id), peca: l.peca || '', qtd: l.qt || 0, site: l.fab || '',
-      status: 'CARTEIRA', origem: 'carteira',
+      status: 'PLANEJAMENTO', origem: 'planejamento',
       torno: Math.round(c.TORNO) || 0, centro: Math.round(c.CENTRO) || 0
     };
     /* A programação pode já ter esse forms com o nº de origem (a lista
@@ -29778,14 +30191,58 @@ function ctEnviaProg() {
 window.ctParaProgramacao = ctParaProgramacao;
 window.ctEnviaProg = ctEnviaProg;
 
+/* ── Rótulo antigo nas requisições da programação ───────────────────
+   Esta tela se chamava "Carteira do Mês", e cada requisição mandada
+   daqui ia gravada com status 'CARTEIRA' e origem 'carteira'. Esses
+   registros já estão em /prog e aparecem para quem aponta, então sem
+   esta passada os antigos ficariam com um rótulo e os novos com
+   outro, para a mesma coisa.
+
+   Converte o que achar no navegador; o módulo da programação
+   compartilhada leva a diferença para o servidor sozinho. É
+   idempotente: quando não acha nada, não grava nada — por isso roda
+   também quando chega estado novo do servidor, sem risco de laço. */
+let _ctMigrandoRotulo = false;
+function ctMigraRotuloPlanejamento() {
+  if (_ctMigrandoRotulo) return 0;
+  _ctMigrandoRotulo = true;
+  let trocados = 0;
+  try {
+    let st = null;
+    try { st = JSON.parse(localStorage.getItem(CT_PROG_KEY) || 'null'); } catch (e) { return 0; }
+    if (!st || typeof st !== 'object') return 0;
+    const arruma = o => {
+      if (!o || typeof o !== 'object') return;
+      if (o.status === 'CARTEIRA') { o.status = 'PLANEJAMENTO'; trocados++; }
+      if (o.origem === 'carteira') { o.origem = 'planejamento'; trocados++; }
+    };
+    ['reqs', 'feitos'].forEach(t => {
+      const g = st[t]; if (!g || typeof g !== 'object') return;
+      (Array.isArray(g) ? g : Object.keys(g).map(k => g[k])).forEach(arruma);
+    });
+    const ag = (st.agenda && typeof st.agenda === 'object') ? st.agenda : {};
+    Object.keys(ag).forEach(k => { if (Array.isArray(ag[k])) ag[k].forEach(arruma); });
+    if (trocados) {
+      localStorage.setItem(CT_PROG_KEY, JSON.stringify(st));
+      window.dispatchEvent(new Event('apont-prog-remoto'));
+      console.log('[planejamento] rótulo antigo convertido em ' + trocados + ' campo(s)');
+    }
+  } catch (e) { console.warn('[planejamento] conversão do rótulo:', e); }
+  finally { _ctMigrandoRotulo = false; }
+  return trocados;
+}
+window.ctMigraRotuloPlanejamento = ctMigraRotuloPlanejamento;
+setTimeout(ctMigraRotuloPlanejamento, 6000);
+window.addEventListener('apont-prog-remoto', () => setTimeout(ctMigraRotuloPlanejamento, 400));
+
 /* Gera a planilha já no formato que o importador do planejamento lê. */
 async function ctExportar() {
   const d = ctDoMes(ctMes);
   const naCart = new Set(d.refs || []);
   const linhas = ctLinhas().filter(l => naCart.has(l.id));
   if (!linhas.length) {
-    ctAviso('Carteira vazia', 'Não há nada em ' + ctEsc(ctMesNome(ctMes)) + ' para exportar. '
-      + 'Use <b>✨ Sugerir carteira</b> ou marque forms no <b>+</b>.');
+    ctAviso('Planejamento vazio', 'Não há nada em ' + ctEsc(ctMesNome(ctMes)) + ' para exportar. '
+      + 'Use <b>✨ Sugerir planejamento</b> ou marque forms no <b>+</b>.');
     return;
   }
   if (window.__apontGaranteXLSX && !(await window.__apontGaranteXLSX())) {
