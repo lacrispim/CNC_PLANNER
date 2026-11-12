@@ -6902,6 +6902,7 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
         <div class="sol-more-menu" id="solMoreMenu">
           <button onclick="solMoreClose();Sol && Sol.openBulkAttach()"><span>↑</span><span data-i18n="sol.atrelarDes">Atrelar desenhos</span></button>
           <button onclick="solMoreClose();Sol && Sol.ratearExistentes()" title="Divide o custo do fornecedor entre a principal e as relacionadas nos grupos criados antes do rateio automático"><span>÷</span><span>Ratear relacionadas</span></button>
+          <button onclick="solMoreClose();__limpaMemoria()" title="Mostra o que está ocupando a memória do navegador e libera o que pode ser baixado de novo da nuvem"><span>🧹</span><span>Liberar memória</span></button>
         </div>
       </div>
     </div>
@@ -15517,6 +15518,178 @@ Confirma execução?`;
   }
 };
 
+/* ─── Faxina automática ────────────────────────────────────────────
+   Quando o armário enche, o certo não é avisar e perder a edição: é
+   abrir espaço e gravar. A ordem importa — primeiro o que não faz
+   falta nenhuma, e nunca algo que ainda não subiu para o Firebase. */
+let _faxinando = false;
+window.__faxinaAuto = function () {
+  if (_faxinando) return 0;                       // nada de faxina dentro de faxina
+  _faxinando = true;
+  const antes = __ocupacaoLS().totalKB;
+  try {
+    /* 1. O que ainda não subiu vai agora. Apagar a cópia de algo que não
+          chegou no servidor seria perder de vez.                       */
+    try { if (typeof FB !== 'undefined' && FB.flushDebounced) FB.flushDebounced(); } catch (e) {}
+
+    /* 2. Fotos antigas da carteira: é histórico, ninguém opera com elas. */
+    try {
+      const t = JSON.parse(localStorage.getItem('cnc_carteira_v1') || '{}');
+      let mexeu = false;
+      Object.keys(t).forEach(m => {
+        const v = (t[m] || {}).versoes;
+        if (Array.isArray(v) && v.length > 1) { t[m].versoes = v.slice(0, 1); mexeu = true; }
+      });
+      if (mexeu) Object.getPrototypeOf(localStorage).setItem.call(localStorage, 'cnc_carteira_v1', JSON.stringify(t));
+    } catch (e) {}
+
+    /* 3. Meses de carteira com mais de 18 meses: não se replaneja o passado. */
+    try {
+      const t = JSON.parse(localStorage.getItem('cnc_carteira_v1') || '{}');
+      const hoje = new Date();
+      const corte = new Date(hoje.getFullYear(), hoje.getMonth() - 18, 1);
+      let mexeu = false;
+      Object.keys(t).forEach(m => {
+        const p = String(m).split('-');
+        if (p.length !== 2) return;
+        const d = new Date(+p[0], +p[1] - 1, 1);
+        if (d < corte) { delete t[m]; mexeu = true; }
+      });
+      if (mexeu) Object.getPrototypeOf(localStorage).setItem.call(localStorage, 'cnc_carteira_v1', JSON.stringify(t));
+    } catch (e) {}
+
+    /* 4. Ainda apertado? Descarta cópias do Firebase, da maior para a
+          menor, pulando qualquer uma com alteração ainda na fila. Elas
+          voltam no próximo carregamento — por isso o recarregar abaixo. */
+    if (__ocupacaoLS().totalKB > 3000) {
+      const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+      const alvos = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        const path = k && mapa[k];
+        if (!path) continue;
+        let pend = false;
+        try { pend = (typeof FB !== 'undefined' && FB.naoEnviado) ? FB.naoEnviado(path) : true; } catch (e) { pend = true; }
+        if (pend) continue;                        // tem coisa para subir: não encosta
+        alvos.push([k, (localStorage.getItem(k) || '').length]);
+      }
+      alvos.sort((a, b) => b[1] - a[1]);
+      for (const [k] of alvos) {
+        try { localStorage.removeItem(k); } catch (e) {}
+        window.__precisaRecarregar = true;
+        if (__ocupacaoLS().totalKB < 2000) break;
+      }
+    }
+  } finally { _faxinando = false; }
+  const liberou = antes - __ocupacaoLS().totalKB;
+  if (liberou > 0) console.log('[espaço] faxina automática liberou', liberou, 'KB');
+  return liberou;
+};
+
+/* As cópias apagadas precisam voltar do Firebase: o recarregar é parte da
+   faxina, não um efeito colateral. Vai com aviso e um respiro, para a
+   gravação que disparou tudo isso terminar antes.                      */
+window.__agendaRecarga = function () {
+  if (!window.__precisaRecarregar || window.__recargaMarcada) return;
+  window.__recargaMarcada = true;
+  const msg = '🧹 Liberei memória do navegador. Recarregando para repor os dados da nuvem…';
+  if (typeof toast === 'function') toast(msg, 'info', 6000);
+  setTimeout(() => location.reload(), 2500);
+};
+
+/* ─── Liberar memória com segurança ────────────────────────────────
+   Quase tudo que ocupa espaço aqui é cópia do que está no Firebase: some
+   daqui, volta no próximo carregamento. O que NÃO está na nuvem não pode
+   ser apagado no susto, então esse é separado e só sai se a pessoa
+   mandar, item a item.                                               */
+function __lsRecuperavel() {
+  try {
+    const m = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+    /* "Recuperável" = sobe para a nuvem E volta de lá no carregamento.
+       cnc_tempos_v1 só passou a voltar na versão de 12/11; antes dela
+       era só-sobe, por isso entra pela lista de subida mesmo.        */
+    return new Set(Object.keys(m));
+  } catch (e) { return new Set(); }
+}
+window.__limpaMemoria = async function () {
+  /* Primeiro manda o que ainda não subiu — apagar antes disso perderia
+     a edição de verdade, não só a cópia. */
+  let pend = 0;
+  /* FB é const no escopo global léxico — não existe em window.FB. */
+  try { if (typeof FB !== 'undefined' && FB.flushDebounced) pend = FB.flushDebounced(); } catch (e) {}
+  if (pend) await new Promise(r => setTimeout(r, 1200));
+
+  const rec = __lsRecuperavel();
+  const itens = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k) continue;
+    const n = k.length + (localStorage.getItem(k) || '').length;
+    if (n < 2048) continue;                              // migalha não interessa
+    itens.push({ k: k, kb: Math.round(n / 1024), nuvem: rec.has(k) });
+  }
+  itens.sort((a, b) => b.kb - a.kb);
+  const tot = window.__ocupacaoLS().totalKB;
+  const podem = itens.filter(x => x.nuvem);
+  const soAqui = itens.filter(x => !x.nuvem);
+  const ganho = podem.reduce((a, x) => a + x.kb, 0);
+
+  const linha = x => '<tr><td style="font-family:monospace;font-size:10.5px">' + ctEsc(x.k) + '</td>'
+    + '<td class="ct-tb-num">' + x.kb + ' KB</td>'
+    + '<td>' + (x.nuvem ? '<span style="color:#059669">volta da nuvem</span>'
+                        : '<span style="color:#B45309">só existe aqui</span>') + '</td>'
+    + (x.nuvem ? '<td></td>'
+               : '<td><button class="ct-link ct-link-ruim" onclick="__limpaUma(\'' + ctEsc(x.k) + '\')">apagar</button></td>')
+    + '</tr>';
+
+  ctDialogo('🧹 Memória do navegador',
+    'Em uso: <b>' + tot + ' KB</b> dos ~5.000 KB que o navegador reserva para o app.'
+    + (pend ? '<div style="color:#059669;font-size:11.5px;margin-top:6px">Enviei ' + pend
+              + ' alteração(ões) que ainda estavam na fila antes de mexer em qualquer coisa.</div>' : '')
+    + '<table class="ct-tb" style="margin-top:12px"><thead><tr><th>Dado</th><th>Tamanho</th>'
+    + '<th>Pode apagar?</th><th></th></tr></thead><tbody>'
+    + podem.map(linha).join('') + soAqui.map(linha).join('')
+    + '</tbody></table>'
+    + '<div style="margin-top:12px;font-size:11.5px;line-height:1.7;color:var(--txt3)">'
+    + '<b>volta da nuvem</b>: é cópia do Firebase. Apagar aqui não perde nada — recarrega sozinho.<br>'
+    + '<b>só existe aqui</b>: não está no Firebase. Apagar perde de vez; por isso cada um tem seu próprio botão.'
+    + '</div>',
+    '<button class="ct-btn ct-btn-sec" onclick="ctFechaDlg()">Fechar</button>'
+    + (podem.length
+        ? '<button class="ct-btn" onclick="__limpaRecuperaveis()">Liberar ' + ganho + ' KB da nuvem</button>'
+        : ''),
+    true);
+};
+window.__limpaRecuperaveis = function () {
+  const rec = __lsRecuperavel();
+  const alvos = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && rec.has(k)) alvos.push(k);
+  }
+  ctFechaDlg();
+  ctConfirma('Liberar a memória das cópias',
+    'Vou apagar <b>' + alvos.length + ' cópias locais</b> de dados que estão no Firebase e recarregar a página. '
+    + 'Tudo volta do servidor em alguns segundos.<br><br>'
+    + 'Qualquer alteração ainda não enviada já foi mandada antes de abrir esta tela.',
+    'Liberar e recarregar', () => {
+      alvos.forEach(k => { try { localStorage.removeItem(k); } catch (e) {} });
+      try { localStorage.removeItem('cnc_fb_ack_v1'); } catch (e) {}
+      location.reload();
+    });
+};
+window.__limpaUma = function (chave) {
+  ctFechaDlg();
+  const kb = Math.round(((localStorage.getItem(chave) || '').length) / 1024);
+  ctConfirma('Apagar ' + chave,
+    'Esses <b>' + kb + ' KB</b> <b>não estão no Firebase</b> — apagar aqui perde para sempre.<br><br>'
+    + 'Só faça isso se souber que esse dado não é mais necessário.',
+    'Apagar mesmo assim', () => {
+      try { localStorage.removeItem(chave); } catch (e) {}
+      __limpaMemoria();
+    }, true);
+};
+
 /* ─── Memória do navegador cheia ───────────────────────────────────
    O limite é de ~5 MB por site. Quando bate, nada mais é gravado até
    alguém liberar espaço, e o pior é o app continuar parecendo normal. */
@@ -15529,7 +15702,7 @@ window.__avisaSemEspaco = function (chave, e) {
   if (Date.now() - _semEspacoEm < 60000) return;     // um aviso por minuto basta
   _semEspacoEm = Date.now();
   const msg = '⚠️ Memória do navegador cheia — esta alteração NÃO foi salva. '
-    + 'Recarregue a página (os dados vêm da nuvem) para liberar espaço.';
+    + 'Abra Solicitações → Mais ▾ → 🧹 Liberar memória.';
   if (typeof toast === 'function') toast(msg, 'error', 12000);
   else if (typeof __apontBalao === 'function') __apontBalao(msg, '#F87171');
 };
@@ -23085,7 +23258,18 @@ window.__apontLiderEmergencia = __apontLiderEmergencia;
        engolir o erro num catch — e a tela segue mostrando algo que não foi
        gravado. O aviso sai daqui, uma vez só, para qualquer módulo.      */
     try { protoSet.call(this, k, v); }              // grava sempre, primeiro
-    catch (e) { if (this === window.localStorage) window.__avisaSemEspaco(k, e); throw e; }
+    catch (e) {
+      if (this !== window.localStorage) throw e;
+      /* Sem espaço: abre espaço e grava de novo. O usuário não pode
+         perder a edição porque o armário encheu.                     */
+      let salvou = false;
+      if (window.__faxinaAuto && window.__faxinaAuto() > 0) {
+        try { protoSet.call(this, k, v); salvou = true; } catch (e2) {}
+      }
+      if (!salvou) { window.__avisaSemEspaco(k, e); throw e; }
+      console.warn('[espaço] gravei', k, 'depois da faxina automática');
+      if (window.__agendaRecarga) window.__agendaRecarga();
+    }
     if (this !== window.localStorage) return;
     if (k === CHAVE) { ultimo = v; envia(v); }      // programação → /prog
     if (typeof window._espelhaNoFirebase === 'function') window._espelhaNoFirebase(k, v);
@@ -23928,6 +24112,34 @@ async function fbBootstrap() {
   });
 
   console.log('[FB] Bootstrap completo. Listeners ativos.');
+
+  /* Faxina preventiva: com o armário acima de 70%, apara só o histórico
+     (fotos antigas da carteira e meses de mais de 18 meses). Nunca mexe
+     em cópia do Firebase na abertura — isso derrubaria o que acabou de
+     ser baixado e viraria um recarregar atrás do outro.              */
+  setTimeout(() => {
+    try {
+      const uso = window.__ocupacaoLS().totalKB;
+      if (uso < 3500) return;
+      const antes = uso;
+      const t = JSON.parse(localStorage.getItem('cnc_carteira_v1') || '{}');
+      const hoje = new Date();
+      const corte = new Date(hoje.getFullYear(), hoje.getMonth() - 18, 1);
+      let mexeu = false;
+      Object.keys(t).forEach(m => {
+        const p = String(m).split('-');
+        if (p.length === 2) {
+          const d = new Date(+p[0], +p[1] - 1, 1);
+          if (d < corte) { delete t[m]; mexeu = true; return; }
+        }
+        const v = (t[m] || {}).versoes;
+        if (Array.isArray(v) && v.length > 2) { t[m].versoes = v.slice(0, 2); mexeu = true; }
+      });
+      if (!mexeu) return;
+      Object.getPrototypeOf(localStorage).setItem.call(localStorage, 'cnc_carteira_v1', JSON.stringify(t));
+      console.log('[espaço] faxina preventiva:', antes - window.__ocupacaoLS().totalKB, 'KB liberados de histórico');
+    } catch (e) { console.warn('[espaço] faxina preventiva', e); }
+  }, 6000);
 
   // Sincroniza a Biblioteca de Desenhos (dwLib) entre navegadores via /dwlib.
   try{
@@ -26173,7 +26385,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 12/11/2026 09:21</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 12/11/2026 10:01</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
