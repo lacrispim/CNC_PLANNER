@@ -2186,7 +2186,7 @@ input[type="search"]::-webkit-search-cancel-button:hover{opacity:1;}
 #solicitacoesView .sol-b-rej{background:#fee2e2;color:#991b1b}
 #solicitacoesView .sol-b-pend{background:#FFF3CD;color:#856404}
 #solicitacoesView .sol-b-prog{background:#d1ecf1;color:#0c5460}
-#solicitacoesView .sol-b-done{background:#d4edda;color:#155724}
+#solicitacoesView .sol-b-done{background:#d1fae5;color:#065f46}
 #solicitacoesView .sol-b-blok{background:#f8d7da;color:#721c24}
 #solicitacoesView .sol-trunc{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
@@ -15523,7 +15523,9 @@ Confirma execução?`;
    abrir espaço e gravar. A ordem importa — primeiro o que não faz
    falta nenhuma, e nunca algo que ainda não subiu para o Firebase. */
 let _faxinando = false;
-window.__faxinaAuto = function () {
+/* `exceto` é a chave que está sendo gravada agora: apagá-la no meio da
+   própria gravação seria trocar um problema por outro. */
+window.__faxinaAuto = function (exceto) {
   if (_faxinando) return 0;                       // nada de faxina dentro de faxina
   _faxinando = true;
   const antes = __ocupacaoLS().totalKB;
@@ -15558,27 +15560,34 @@ window.__faxinaAuto = function () {
       if (mexeu) Object.getPrototypeOf(localStorage).setItem.call(localStorage, 'cnc_carteira_v1', JSON.stringify(t));
     } catch (e) {}
 
-    /* 4. Ainda apertado? Descarta cópias do Firebase, da maior para a
-          menor, pulando qualquer uma com alteração ainda na fila. Elas
-          voltam no próximo carregamento — por isso o recarregar abaixo. */
-    if (__ocupacaoLS().totalKB > 3000) {
-      const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
-      const alvos = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        const path = k && mapa[k];
-        if (!path) continue;
-        let pend = false;
+    /* 4. Descarta cópias do Firebase, da maior para a menor, pulando as
+          que têm alteração na fila. Sem piso: quem chamou chamou porque
+          uma gravação falhou, e só ela sabe quanto espaço precisa — a
+          cada descarte quem chamou tenta de novo.                     */
+    const rec = __lsRecuperavel();
+    const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+    /* Quem sai primeiro: cache puro, que se refaz sozinho sem recarregar.
+       Por último, o que a pessoa está editando agora — carteira e tempos. */
+    const ULTIMOS = ['cnc_carteira_v1', 'cnc_tempos_v1'];
+    const prioridade = k => LS_CACHES.indexOf(k) >= 0 ? 0 : (ULTIMOS.indexOf(k) >= 0 ? 2 : 1);
+    const alvos = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !rec.has(k)) continue;
+      if (exceto && k === exceto) continue;        // é a gravação em curso
+      const path = mapa[k];
+      if (path) {
+        let pend = true;
         try { pend = (typeof FB !== 'undefined' && FB.naoEnviado) ? FB.naoEnviado(path) : true; } catch (e) { pend = true; }
         if (pend) continue;                        // tem coisa para subir: não encosta
-        alvos.push([k, (localStorage.getItem(k) || '').length]);
       }
-      alvos.sort((a, b) => b[1] - a[1]);
-      for (const [k] of alvos) {
-        try { localStorage.removeItem(k); } catch (e) {}
-        window.__precisaRecarregar = true;
-        if (__ocupacaoLS().totalKB < 2000) break;
-      }
+      alvos.push([k, (localStorage.getItem(k) || '').length]);
+    }
+    alvos.sort((a, b) => (prioridade(a[0]) - prioridade(b[0])) || (b[1] - a[1]));
+    for (const [k] of alvos) {
+      try { localStorage.removeItem(k); } catch (e) {}
+      window.__precisaRecarregar = true;
+      if (__ocupacaoLS().totalKB < __tetoLS() * 0.5) break;
     }
   } finally { _faxinando = false; }
   const liberou = antes - __ocupacaoLS().totalKB;
@@ -15602,14 +15611,15 @@ window.__agendaRecarga = function () {
    daqui, volta no próximo carregamento. O que NÃO está na nuvem não pode
    ser apagado no susto, então esse é separado e só sai se a pessoa
    mandar, item a item.                                               */
+/* Caches que não passam pelo FB_KEY_MAP mas são reconstruídos pelo
+   listener assim que o app abre — apagar é inofensivo.             */
+const LS_CACHES = ['apont_regs_cache_v1', 'cnc_compras_mp_v1'];
 function __lsRecuperavel() {
   try {
     const m = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
-    /* "Recuperável" = sobe para a nuvem E volta de lá no carregamento.
-       cnc_tempos_v1 só passou a voltar na versão de 12/11; antes dela
-       era só-sobe, por isso entra pela lista de subida mesmo.        */
-    return new Set(Object.keys(m));
-  } catch (e) { return new Set(); }
+    const base = new Set(Object.keys(m).concat(LS_CACHES));
+    return base;
+  } catch (e) { return new Set(LS_CACHES); }
 }
 window.__limpaMemoria = async function () {
   /* Primeiro manda o que ainda não subiu — apagar antes disso perderia
@@ -15643,7 +15653,13 @@ window.__limpaMemoria = async function () {
     + '</tr>';
 
   ctDialogo('🧹 Memória do navegador',
-    'Em uso: <b>' + tot + ' KB</b> dos ~5.000 KB que o navegador reserva para o app.'
+    'Em uso: <b>' + tot + ' KB</b> de ~' + __tetoLS() + ' KB que este navegador aceita.'
+    + (__tetoLS() < 4000
+        ? '<div style="color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:7px;'
+          + 'padding:9px 11px;font-size:11.5px;line-height:1.6;margin-top:9px">Este navegador é mais '
+          + 'apertado que a média (o Chrome costuma dar 5.000 KB). Ele já recusou uma gravação com '
+          + __tetoLS() + ' KB em uso, então é esse o limite real aqui.</div>'
+        : '')
     + (pend ? '<div style="color:#059669;font-size:11.5px;margin-top:6px">Enviei ' + pend
               + ' alteração(ões) que ainda estavam na fila antes de mexer em qualquer coisa.</div>' : '')
     + '<table class="ct-tb" style="margin-top:12px"><thead><tr><th>Dado</th><th>Tamanho</th>'
@@ -15693,11 +15709,58 @@ window.__limpaUma = function (chave) {
 /* ─── Memória do navegador cheia ───────────────────────────────────
    O limite é de ~5 MB por site. Quando bate, nada mais é gravado até
    alguém liberar espaço, e o pior é o app continuar parecendo normal. */
+/* O teto de 5 MB é a conta do Chrome. O Safari do iPad recusa muito
+   antes, e assumir 5.000 KB fazia a faxina nunca entrar — era por isso
+   que o aviso voltava mesmo com 1.189 KB em uso. Agora o teto é o que o
+   navegador de fato aceitou, aprendido no primeiro "não".           */
+const LS_TETO_KEY = 'cnc_ls_teto_v1';
+window.__tetoLS = function () {
+  try {
+    const v = parseInt(localStorage.getItem(LS_TETO_KEY) || '0', 10);
+    if (v > 0) {
+      /* O teto também sobe: se hoje cabe mais do que o número anotado, o
+         número estava errado (falha passageira, outro navegador, dados
+         que encolheram). Sem isso, um "não" isolado no Chrome deixaria
+         ele limpando à toa para sempre.                              */
+      const uso = _usoLS();
+      if (uso > v) {
+        const novo = Math.round(uso * 1.1);
+        try { Object.getPrototypeOf(localStorage).setItem.call(localStorage, LS_TETO_KEY, String(novo)); } catch (e) {}
+        return novo;
+      }
+      return v;
+    }
+  } catch (e) {}
+  return 5000;                                    // o padrão do Chrome
+};
+function _usoLS() {
+  let t = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    t += (k || '').length + (localStorage.getItem(k) || '').length;
+  }
+  return Math.round(t / 1024);
+}
+window.__anotaTetoLS = function (e) {
+  const quota = !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || e.code === 22 || e.code === 1014 || /quota|exceed/i.test(String(e.message || '')));
+  if (quota) _anotaTeto(window.__ocupacaoLS().totalKB);
+};
+function _anotaTeto(kb) {
+  try {
+    const atual = parseInt(localStorage.getItem(LS_TETO_KEY) || '0', 10) || 0;
+    if (!atual || kb < atual) {
+      Object.getPrototypeOf(localStorage).setItem.call(localStorage, LS_TETO_KEY, String(kb));
+      console.warn('[espaço] este navegador recusa a partir de ~' + kb + ' KB');
+    }
+  } catch (e) {}
+}
 let _semEspacoEm = 0;
 window.__avisaSemEspaco = function (chave, e) {
   const quota = !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED'
     || e.code === 22 || e.code === 1014 || /quota|exceed/i.test(String(e.message || '')));
   if (!quota) return;
+  _anotaTeto(window.__ocupacaoLS().totalKB);
   console.error('[espaço] localStorage cheio ao gravar', chave, '—', window.__ocupacaoLS());
   if (Date.now() - _semEspacoEm < 60000) return;     // um aviso por minuto basta
   _semEspacoEm = Date.now();
@@ -18554,10 +18617,22 @@ function prBadge(pr) {
 }
 
 function stBadge(st) {
-  const m = {Pendente:'sol-b-pend','Aprovação para compra':'sol-b-apr','Aguardando SAP IRON':'sol-b-sap','Rejeitado':'sol-b-rej'};
+  /* Faltavam Encerrado, Fila e Em Produção: caíam no amarelo de Pendente,
+     e aí o que já acabou ficava igual ao que nem começou.            */
+  const m = {
+    'Pendente': 'sol-b-pend',
+    'Aprovação para compra': 'sol-b-apr',
+    'Aguardando SAP IRON': 'sol-b-sap',
+    'Fila de produção': 'sol-b-prog',
+    'Em Produção': 'sol-b-prog',
+    'Encerrado': 'sol-b-done',
+    'Encerrado - produção completa': 'sol-b-done',
+    'Rejeitado': 'sol-b-rej'
+  };
   let lbl = st;
   if (st === 'Aprovação para compra') lbl = 'Aprovado';
   else if (st === 'Aguardando SAP IRON') lbl = 'Aguard. SAP';
+  else if (st === 'Encerrado - produção completa') lbl = 'Encerrado';
   return `<span class="sol-badge ${m[st]||'sol-b-pend'}" title="${st}">${lbl||'—'}</span>`;
 }
 
@@ -23260,10 +23335,15 @@ window.__apontLiderEmergencia = __apontLiderEmergencia;
     try { protoSet.call(this, k, v); }              // grava sempre, primeiro
     catch (e) {
       if (this !== window.localStorage) throw e;
+      /* O "não" do navegador é a única medida confiável do teto dele —
+         anota antes de limpar, mesmo que a segunda tentativa funcione. */
+      if (window.__anotaTetoLS) window.__anotaTetoLS(e);
       /* Sem espaço: abre espaço e grava de novo. O usuário não pode
-         perder a edição porque o armário encheu.                     */
+         perder a edição porque o armário encheu. Uma rodada de faxina
+         pode não bastar num navegador apertado, então insiste.      */
       let salvou = false;
-      if (window.__faxinaAuto && window.__faxinaAuto() > 0) {
+      for (let tentativa = 0; tentativa < 4 && !salvou; tentativa++) {
+        if (!window.__faxinaAuto || window.__faxinaAuto(k) <= 0) break;
         try { protoSet.call(this, k, v); salvou = true; } catch (e2) {}
       }
       if (!salvou) { window.__avisaSemEspaco(k, e); throw e; }
@@ -23939,8 +24019,23 @@ async function fbBootstrap() {
         const valor = (fbPath === '/carteira_mes' || fbPath === '/tempos_peca')
           ? _fbMergePorTs(local, serverVal, fbPath)
           : serverVal;
-        origSet.call(localStorage, lsKey, JSON.stringify(valor));
-        console.log('[FB] Baixado:', fbPath);
+        /* Num navegador apertado uma chave grande pode não caber. Antes,
+           esse erro subia e matava o bootstrap inteiro — sem listeners,
+           sem sincronização, e a mensagem "quota exceeded" na tela.
+           Agora cada chave falha sozinha e o resto continua.        */
+        try {
+          origSet.call(localStorage, lsKey, JSON.stringify(valor));
+          console.log('[FB] Baixado:', fbPath);
+        } catch (eq) {
+          console.warn('[FB] não coube:', fbPath, '— liberando espaço e tentando de novo');
+          let ok = false;
+          for (let t = 0; t < 4 && !ok; t++) {
+            if (!window.__faxinaAuto || window.__faxinaAuto(lsKey) <= 0) break;
+            try { origSet.call(localStorage, lsKey, JSON.stringify(valor)); ok = true; } catch (e2) {}
+          }
+          if (!ok) { try { localStorage.removeItem(lsKey); } catch (e3) {} 
+                     console.warn('[FB] ' + fbPath + ' ficou só na nuvem nesta sessão'); }
+        }
       }
     } else if (localVal) {
       // Servidor vazio mas local tem dados — sobe pro servidor
@@ -24120,7 +24215,7 @@ async function fbBootstrap() {
   setTimeout(() => {
     try {
       const uso = window.__ocupacaoLS().totalKB;
-      if (uso < 3500) return;
+      if (uso < window.__tetoLS() * 0.7) return;
       const antes = uso;
       const t = JSON.parse(localStorage.getItem('cnc_carteira_v1') || '{}');
       const hoje = new Date();
@@ -26385,7 +26480,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 12/11/2026 10:01</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 12/11/2026 10:58</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
