@@ -23670,7 +23670,8 @@ async function fbBootstrap() {
     '/ne_vinculos':   'cnc_ne_vinculos_v1',
     '/ne_sites':      'cnc_ne_sites_v1',
     '/ne_hist':       'cnc_ne_hist_v1',
-    '/carteira_mes':  'cnc_carteira_v1'
+    '/carteira_mes':  'cnc_carteira_v1',
+    '/tempos_peca':   'cnc_tempos_v1'
   };
 
   for (const fbPath in mergeStrategy) {
@@ -23716,7 +23717,12 @@ async function fbBootstrap() {
       } else {
         // Bypassa o setItem interceptado pra evitar re-upload
         const origSet = Object.getPrototypeOf(localStorage).setItem;
-        origSet.call(localStorage, lsKey, JSON.stringify(serverVal));
+        /* Carteira e tempos nunca são substituídos em bloco, nem na abertura:
+           o mês que alguém editou aqui pode ser mais novo que o do servidor. */
+        const valor = (fbPath === '/carteira_mes' || fbPath === '/tempos_peca')
+          ? _fbMergePorTs(local, serverVal, fbPath)
+          : serverVal;
+        origSet.call(localStorage, lsKey, JSON.stringify(valor));
         console.log('[FB] Baixado:', fbPath);
       }
     } else if (localVal) {
@@ -23841,6 +23847,20 @@ async function fbBootstrap() {
         const merged = Array.from(byId.values());
         origSet.call(localStorage, lsKey, JSON.stringify(merged));
         console.log(`[FB] Listener /sol_new MERGE: servidor ${serverList.length} + local ${localList.length} → ${merged.length} (${keptLocal} locais preservados)`);
+      } else if (fbPath === '/carteira_mes' || fbPath === '/tempos_peca') {
+        /* Carteira e tempos de peça são editados o tempo todo enquanto o
+           listener ecoa. Sobrescrever o local com o que veio desfazia o que
+           a pessoa acabou de fazer — e, quando o servidor devolvia vazio, o
+           ramo de baixo gravava [] e apagava o mês inteiro. Aqui cada parte
+           (mês, ou forms) é comparada pelo seu próprio carimbo de hora e só
+           entra se for mais nova que a daqui.                            */
+        const antes = (() => { try { return JSON.parse(localStorage.getItem(lsKey) || '{}') || {}; } catch (e) { return {}; } })();
+        const merged = _fbMergePorTs(antes, val, fbPath);
+        origSet.call(localStorage, lsKey, JSON.stringify(merged));
+        if (fbPath === '/tempos_peca' && typeof ctTemposMudou === 'function') ctTemposMudou();
+        if (typeof carteiraRender === 'function' && document.getElementById('carteiraView')) {
+          try { carteiraRender(); } catch (e) {}
+        }
       } else if (val === null || val === undefined) {
         // Servidor está vazio — limpa local também
         origSet.call(localStorage, lsKey, JSON.stringify(fbPath === '/sol_mods' || fbPath === '/config' ? {} : []));
@@ -23894,6 +23914,30 @@ async function fbBootstrap() {
     FB.reportError('bootstrap', e);
   }
 }
+
+/* Junta o que veio do servidor com o que está aqui, parte por parte.
+   Cada parte carrega _ts; a mais nova vence. Parte que só existe de um
+   lado é mantida. _del marca apagada de propósito — sem isso, apagar
+   aqui seria desfeito pelo eco do servidor.                          */
+function _fbMergePorTs(local, servidor, path) {
+  const L = (local && typeof local === 'object' && !Array.isArray(local)) ? local : {};
+  const S = (servidor && typeof servidor === 'object' && !Array.isArray(servidor)) ? servidor : {};
+  const out = {};
+  let daqui = 0, deLa = 0;
+  new Set([...Object.keys(L), ...Object.keys(S)]).forEach(k => {
+    const a = L[k], b = S[k];
+    if (a == null) { out[k] = b; deLa++; return; }
+    if (b == null) { out[k] = a; daqui++; return; }
+    const ta = Number(a && a._ts) || 0, tb = Number(b && b._ts) || 0;
+    /* Empate (ou os dois sem carimbo): o local manda, porque é o que a
+       pessoa está vendo na tela neste instante. */
+    if (tb > ta) { out[k] = b; deLa++; } else { out[k] = a; daqui++; }
+  });
+  Object.keys(out).forEach(k => { if (out[k] && out[k]._del) delete out[k]; });
+  console.log('[FB] ' + path + ' merge: ' + deLa + ' do servidor, ' + daqui + ' mantidos daqui');
+  return out;
+}
+window._fbMergePorTs = _fbMergePorTs;
 
 function _fbRefreshActiveView() {
   // Detecta view ativa e atualiza
@@ -26096,7 +26140,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 11/11/2026 15:18</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 12/11/2026 08:29</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
@@ -27974,7 +28018,14 @@ function ctDoMes(m) {
   if (!t[m]) t[m] = { refs: [], cap: null };
   return t[m];
 }
-function ctSalvaMes(m, dados) { const t = ctTudo(); t[m] = dados; ctGrava(t); }
+/* O carimbo é o que permite ao merge decidir entre o que está aqui e o
+   que veio do servidor. Sem ele, o eco do Firebase desfazia a edição. */
+function ctSalvaMes(m, dados) {
+  const t = ctTudo();
+  dados._ts = Date.now();
+  t[m] = dados;
+  ctGrava(t);
+}
 
 /* ── capacidade: o planejador manda, porque ele sabe quem está de férias ── */
 function ctCapPadrao(m) {
@@ -28229,7 +28280,7 @@ function ctTempoDe(id) {
   const v = ctTempos()[String(id)];
   if (v == null || v === '') return null;
   if (typeof v === 'number') return { cT: v };            // formato antigo: só o ciclo de torno
-  if (typeof v !== 'object') return null;
+  if (typeof v !== 'object' || v._del) return null;
   const out = {};
   CT_TEMPO_CAMPOS.forEach(k => { if (v[k] != null && v[k] !== '') out[k] = Number(v[k]); });
   return Object.keys(out).length ? out : null;
@@ -28246,14 +28297,15 @@ function ctSetTempo(id, campo, val) {
     if (!Number.isFinite(v) || v < 0) return;
     atual[campo] = Math.round(v * 100) / 100;
   }
-  if (Object.keys(atual).length) t[k] = atual; else delete t[k];
+  if (Object.keys(atual).filter(x => x !== '_ts').length) { atual._ts = Date.now(); t[k] = atual; }
+  else t[k] = { _del: true, _ts: Date.now() };   // lápide: apagar aqui tem que vencer o eco
   try { localStorage.setItem(CT_TEMPOS_KEY, JSON.stringify(t)); } catch (e) {}
   ctTemposMudou();
   carteiraRender();
 }
 /* Limpa os quatro de uma vez. */
 function ctLimpaTempo(id) {
-  const t = ctTempos(); delete t[String(id)];
+  const t = ctTempos(); t[String(id)] = { _del: true, _ts: Date.now() };
   try { localStorage.setItem(CT_TEMPOS_KEY, JSON.stringify(t)); } catch (e) {}
   ctTemposMudou();
   carteiraRender();
