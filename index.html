@@ -15517,6 +15517,35 @@ Confirma execução?`;
   }
 };
 
+/* ─── Memória do navegador cheia ───────────────────────────────────
+   O limite é de ~5 MB por site. Quando bate, nada mais é gravado até
+   alguém liberar espaço, e o pior é o app continuar parecendo normal. */
+let _semEspacoEm = 0;
+window.__avisaSemEspaco = function (chave, e) {
+  const quota = !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || e.code === 22 || e.code === 1014 || /quota|exceed/i.test(String(e.message || '')));
+  if (!quota) return;
+  console.error('[espaço] localStorage cheio ao gravar', chave, '—', window.__ocupacaoLS());
+  if (Date.now() - _semEspacoEm < 60000) return;     // um aviso por minuto basta
+  _semEspacoEm = Date.now();
+  const msg = '⚠️ Memória do navegador cheia — esta alteração NÃO foi salva. '
+    + 'Recarregue a página (os dados vêm da nuvem) para liberar espaço.';
+  if (typeof toast === 'function') toast(msg, 'error', 12000);
+  else if (typeof __apontBalao === 'function') __apontBalao(msg, '#F87171');
+};
+/* O que está ocupando — útil no console quando isso acontece. */
+window.__ocupacaoLS = function () {
+  const L = [];
+  let tot = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    const n = (k || '').length + (localStorage.getItem(k) || '').length;
+    tot += n; L.push([k, n]);
+  }
+  L.sort((a, b) => b[1] - a[1]);
+  return { totalKB: Math.round(tot / 1024), maiores: L.slice(0, 8).map(x => x[0] + ': ' + Math.round(x[1] / 1024) + ' KB') };
+};
+
 /* ════════════════════ RESET POR URL (manual, sem flag) ════════════════════
    Apaga TUDO quando a URL contém ?reset=1. Caso contrário, não faz nada.
    - Sem flag (pra contornar flags antigas que possam ter ficado travadas)
@@ -23052,7 +23081,11 @@ window.__apontLiderEmergencia = __apontLiderEmergencia;
      direto não substitui o método — o navegador trata como gravar um item
      chamado "setItem". */
   Storage.prototype.setItem = function(k, v){
-    protoSet.call(this, k, v);                      // grava sempre, primeiro
+    /* Quando o navegador recusa por falta de espaço, quem chamou costuma
+       engolir o erro num catch — e a tela segue mostrando algo que não foi
+       gravado. O aviso sai daqui, uma vez só, para qualquer módulo.      */
+    try { protoSet.call(this, k, v); }              // grava sempre, primeiro
+    catch (e) { if (this === window.localStorage) window.__avisaSemEspaco(k, e); throw e; }
     if (this !== window.localStorage) return;
     if (k === CHAVE) { ultimo = v; envia(v); }      // programação → /prog
     if (typeof window._espelhaNoFirebase === 'function') window._espelhaNoFirebase(k, v);
@@ -26140,7 +26173,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 12/11/2026 08:29</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 12/11/2026 09:21</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
@@ -27917,6 +27950,7 @@ body.tema-escuro .ct-tb-falta{color:#FCD34D;background:#78350f44;border-color:#9
 .ct-vers-l{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border2);flex-wrap:wrap}
 .ct-vers-l>span{font-weight:700;min-width:120px}
 .ct-vers-l>small{color:var(--tx3);flex:1}
+.ct-vers-kb{font-weight:600;text-transform:none;letter-spacing:0;color:var(--tx3);margin-left:7px}
 .ct-vers-cab{font-size:11.5px;color:var(--tx2);margin-bottom:11px}
 .ct-link-ruim{color:#F87171!important}
 #ctImpressao{display:none}
@@ -28010,8 +28044,42 @@ let ctBuscaCart = '', ctFabCart = '', ctSemMatCart = false;
 function ctTudo() {
   try { return JSON.parse(localStorage.getItem(CT_KEY) || '{}') || {}; } catch (e) { return {}; }
 }
+/* O navegador dá ~5 MB para o app inteiro. Quando estoura, o setItem
+   lança — e engolir esse erro era o pior cenário possível: a tela
+   continuava mostrando o que você fez, mas nada tinha sido gravado.
+   Agora o espaço é liberado jogando fora as fotos mais antigas da
+   carteira, e se mesmo assim não couber, você é avisado.            */
 function ctGrava(t) {
-  try { localStorage.setItem(CT_KEY, JSON.stringify(t)); } catch (e) { console.warn('[carteira]', e); }
+  const tenta = () => { localStorage.setItem(CT_KEY, JSON.stringify(t)); };
+  try { tenta(); return true; } catch (e) { if (!_ctSemEspaco(e)) { console.warn('[carteira]', e); return false; } }
+
+  /* 1ª tentativa: menos fotos guardadas, da mais velha para a mais nova. */
+  for (let corte = 4; corte >= 0; corte--) {
+    let mexeu = false;
+    Object.keys(t).forEach(m => {
+      const v = t[m] && t[m].versoes;
+      if (Array.isArray(v) && v.length > corte) { t[m].versoes = v.slice(0, corte); mexeu = true; }
+    });
+    if (!mexeu) continue;
+    try { tenta(); console.warn('[carteira] espaço apertado: guardei só as ' + corte + ' últimas versões'); return true; }
+    catch (e) { if (!_ctSemEspaco(e)) return false; }
+  }
+
+  /* 2ª: o resto do app também ocupa espaço — avisa em vez de perder. */
+  console.error('[carteira] localStorage cheio, não gravou');
+  if (typeof ctAviso === 'function') {
+    ctAviso('⚠ Não consegui gravar — memória do navegador cheia',
+      'O navegador reserva cerca de 5 MB para o app e esse limite foi atingido, então '
+      + '<b>esta alteração não foi salva</b>.<br><br>Já apaguei as versões antigas da carteira para '
+      + 'abrir espaço e ainda não coube. O que ocupa mais é o histórico local de outros módulos. '
+      + 'Para liberar: feche e reabra o app (ele recarrega os dados da nuvem) ou limpe os dados '
+      + 'do site nas configurações do navegador — nada se perde, tudo está no Firebase.');
+  }
+  return false;
+}
+function _ctSemEspaco(e) {
+  return !!e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    || e.code === 22 || e.code === 1014 || /quota|exceed/i.test(String(e.message || '')));
 }
 function ctDoMes(m) {
   const t = ctTudo();
@@ -29014,7 +29082,10 @@ function ctListaCompleta() {
   ctDialogo('Carteira de ' + ctMesNome(ctMes) + ' — lista completa',
     ctTabelaItens(itens)
     + (vs.length
-        ? '<div class="ct-vers"><b>Versões salvas</b>'
+        ? '<div class="ct-vers"><b>Versões salvas <span class="ct-vers-kb">'
+          + ctKbVersoes() + '</span>'
+          + '<button class="ct-link ct-link-ruim" style="float:right;font-weight:600" '
+          + 'onclick="ctApagaTodasVersoes()">apagar todas</button></b>'
           + vs.map(v => '<div class="ct-vers-l"><span>' + ctEsc(v.nome) + '</span>'
               + '<small>' + ctEsc(v.em) + ' · ' + v.itens.length + ' forms · ' + ctH(v.min) + '</small>'
               + '<button class="ct-link" onclick="ctVerVersao(\'' + ctEsc(v.id) + '\')">abrir</button>'
@@ -29028,6 +29099,41 @@ function ctListaCompleta() {
     + '<button class="ct-btn" onclick="ctSalvarVersao()">💾 Salvar como está</button>', true);
 }
 window.ctListaCompleta = ctListaCompleta;
+
+/* Quanto as fotos estão ocupando — a memória do navegador tem ~5 MB para
+   o app inteiro, e é aqui que ela costuma encher primeiro. */
+function ctKbVersoes() {
+  try {
+    const t = ctTudo();
+    let n = 0, qt = 0;
+    Object.keys(t).forEach(m => {
+      const v = (t[m] || {}).versoes;
+      if (Array.isArray(v) && v.length) { qt += v.length; n += JSON.stringify(v).length; }
+    });
+    return qt + ' em todos os meses · ' + Math.max(1, Math.round(n / 1024)) + ' KB';
+  } catch (e) { return ''; }
+}
+function ctApagaTodasVersoes() {
+  const t = ctTudo();
+  let qt = 0;
+  Object.keys(t).forEach(m => { const v = (t[m] || {}).versoes; if (Array.isArray(v)) qt += v.length; });
+  if (!qt) { ctAviso('Nada a apagar', 'Não há versão salva em nenhum mês.'); return; }
+  const kb = ctKbVersoes();
+  ctFechaDlg();
+  ctConfirma('Apagar todas as versões salvas',
+    'Isso apaga as <b>' + qt + ' fotos</b> guardadas de <b>todos os meses</b> (' + ctEsc(kb) + ') e '
+    + 'libera essa memória do navegador.<br><br>A carteira de cada mês — os forms que estão nela, '
+    + 'as horas e os tempos — <b>não é tocada</b>. Só o histórico de fotos se perde.',
+    'Apagar tudo', () => {
+      const t2 = ctTudo();
+      Object.keys(t2).forEach(m => { if (t2[m]) delete t2[m].versoes; });
+      ctGrava(t2);
+      carteiraRender();
+      ctAviso('✓ Versões apagadas', qt + ' foto(s) removida(s). A carteira continua como estava.');
+    }, true);
+}
+window.ctApagaTodasVersoes = ctApagaTodasVersoes;
+window.ctKbVersoes = ctKbVersoes;
 
 /* ── Versões: o estado do mês congelado, com data e autor ─────────── */
 function ctVersoes(mes) { const d = ctDoMes(mes || ctMes); return Array.isArray(d.versoes) ? d.versoes : []; }
@@ -29055,12 +29161,16 @@ function ctSalvarVersaoOk() {
   if (!itens.length) return;
   const d = ctDoMes(ctMes);
   const vs = Array.isArray(d.versoes) ? d.versoes.slice() : [];
+  /* Guardamos só o que a foto precisa congelar: o nº e os minutos do dia
+     em que ela foi tirada. Peça, fábrica e quantidade são relidas da
+     solicitação na hora de mostrar — repetir esse texto em cada foto
+     enchia o localStorage e derrubava a gravação.                      */
+  const MAQ_COD = { 'TORNO': 1, 'CENTRO': 2, 'AMBAS': 3 };
   let min = 0;
   const guarda = itens.map(l => {
     const c = ctConsumo(l);
     min += c.TORNO + c.CENTRO;
-    return { id: l.id, peca: l.peca, fab: l.fab, qt: l.qt, maq: l.maq,
-             minT: Math.round(c.TORNO), minC: Math.round(c.CENTRO) };
+    return [l.id, Math.round(c.TORNO), Math.round(c.CENTRO), MAQ_COD[l.maq] || 0];
   });
   const agora = new Date();
   const p2 = n => String(n).padStart(2, '0');
@@ -29075,19 +29185,31 @@ function ctSalvarVersaoOk() {
   });
   /* Uma dúzia de fotos por mês é mais do que qualquer um compara; as mais
      velhas saem sozinhas para o arquivo do mês não crescer sem fim.    */
-  d.versoes = vs.slice(0, 12);
+  d.versoes = vs.slice(0, 6);
   ctSalvaMes(ctMes, d);
   carteiraRender();
   ctAviso('✓ Versão salva',
     '<b>' + ctEsc(nome) + '</b> — ' + guarda.length + ' forms, ' + ctH(min) + ' de máquina.<br><br>'
     + 'Ela fica em <b>📋 Lista completa</b>, onde dá para abrir, restaurar ou apagar.'
-    + (vs.length > 12 ? '<br><br><span style="color:#f59e0b">Guardo as 12 últimas deste mês; a mais antiga saiu.</span>' : ''));
+    + (vs.length > 6 ? '<br><br><span style="color:#f59e0b">Guardo as 6 últimas deste mês; a mais antiga saiu.</span>' : ''));
+}
+/* A foto nova é compacta: [nº, min torno, min centro, cód. máquina].
+   A antiga era um objeto com tudo dentro — as duas continuam abrindo. */
+const MAQ_NOME = { 1: 'TORNO', 2: 'CENTRO', 3: 'AMBAS' };
+function ctAbreItemVersao(x) {
+  if (Array.isArray(x)) {
+    const r = (typeof Sol !== 'undefined' && Sol.getData)
+      ? Sol.getData().find(s => String(s.id) === String(x[0])) : null;
+    return { id: String(x[0]), minT: x[1] || 0, minC: x[2] || 0, maq: MAQ_NOME[x[3]] || '',
+             peca: r ? (r.p || '') : '', fab: r ? ctFab(r) : '', qt: r ? r.qt : '' };
+  }
+  return x || {};
 }
 function ctVerVersao(id) {
   const v = ctVersoes(ctMes).find(x => x.id === id);
   if (!v) return;
   let fabAtual = null;
-  const linhas = v.itens.map((l, i) => {
+  const linhas = (v.itens || []).map(ctAbreItemVersao).map((l, i) => {
     const cab = l.fab !== fabAtual
       ? (fabAtual = l.fab, '<tr class="ct-tb-fab"><td colspan="8">' + ctEsc(l.fab || 'sem planta') + '</td></tr>') : '';
     return cab + '<tr><td class="ct-tb-n">' + (i + 1) + '</td><td><b>#' + ctEsc(l.id) + '</b></td>'
@@ -29112,6 +29234,7 @@ function ctVerVersao(id) {
 function ctRestauraVersao(id) {
   const v = ctVersoes(ctMes).find(x => x.id === id);
   if (!v) return;
+  const _ids = (v.itens || []).map(x => Array.isArray(x) ? String(x[0]) : String(x.id));
   ctFechaDlg();
   const atual = (ctDoMes(ctMes).refs || []).length;
   ctConfirma('Restaurar “' + v.nome + '”',
@@ -29121,7 +29244,7 @@ function ctRestauraVersao(id) {
     + 'voltam os forms, não os minutos congelados.',
     'Restaurar', () => {
       const d = ctDoMes(ctMes);
-      d.refs = v.itens.map(x => x.id);
+      d.refs = _ids;
       ctSalvaMes(ctMes, d);
       carteiraRender();
       ctAviso('✓ Carteira restaurada', '<b>' + ctEsc(v.nome) + '</b> voltou: ' + v.itens.length + ' forms.');
