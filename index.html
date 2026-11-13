@@ -14199,8 +14199,10 @@ const FB = (function() {
   /* Tem edição daqui que ainda não chegou no servidor? */
   function _chaveDe(path) {
     try {
-      if (typeof FB_KEY_MAP === 'undefined') return null;
-      for (const k in FB_KEY_MAP) if (FB_KEY_MAP[k] === path) return k;
+      const mapa = window.__mapaSinc ? window.__mapaSinc()
+                 : (typeof FB_KEY_MAP !== 'undefined' ? FB_KEY_MAP : null);
+      if (!mapa) return null;
+      for (const k in mapa) if (mapa[k] === path) return k;
     } catch (e) {}
     return null;
   }
@@ -14461,9 +14463,18 @@ const FB_KEY_MAP = {
   'cnc_ne_vinculos_v1':   '/ne_vinculos',
   'cnc_ne_sites_v1':      '/ne_sites',
   'cnc_ne_hist_v1':       '/ne_hist',
-  'cnc_carteira_v1':      '/carteira_mes',
+  /* 'cnc_carteira_v1' → '/carteira_mes' saiu daqui em 13/11: o planejamento
+     sobe por conta própria, por partes (ver _ctEnvia). Com os dois caminhos
+     juntos, o espelho mandava 1,2 s depois o objeto INTEIRO de uma cópia
+     antiga e apagava no servidor o que o envio por partes tinha gravado. */
   'cnc_tempos_v1':        '/tempos_peca'
 };
+/* Chaves que sobem por um módulo próprio, fora do espelho genérico — o
+   planejamento, por partes. O ENVIO não olha este mapa (senão voltaria a
+   mandar o objeto inteiro); a CONFIRMAÇÃO e a LIMPEZA olham, para saber
+   se a cópia daqui já está segura no servidor antes de apagá-la. */
+const FB_SINC_PROPRIO = { 'cnc_carteira_v1': '/carteira_mes' };
+window.__mapaSinc = function () { return Object.assign({}, FB_KEY_MAP, FB_SINC_PROPRIO); };
 
 
 
@@ -15117,7 +15128,7 @@ window.__faxinaAuto = function (exceto) {
           uma gravação falhou, e só ela sabe quanto espaço precisa — a
           cada descarte quem chamou tenta de novo.                     */
     const rec = __lsRecuperavel();
-    const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+    const mapa = window.__mapaSinc ? window.__mapaSinc() : ((typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {});
     /* Quem sai primeiro: cache puro, que se refaz sozinho sem recarregar.
        Por último, o que a pessoa está editando agora — carteira e tempos. */
     const ULTIMOS = ['cnc_carteira_v1', 'cnc_tempos_v1'];
@@ -15198,7 +15209,7 @@ const LS_CACHES = ['apont_regs_cache_v1', 'cnc_compras_mp_v1'];
    única que existe. Foi assim que a carteira do mês se perdeu.      */
 window.__podeApagar = function (chave) {
   if (!chave) return false;
-  const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+  const mapa = window.__mapaSinc ? window.__mapaSinc() : ((typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {});
   const path = mapa[chave];
   if (!path) return LS_CACHES.indexOf(chave) >= 0;   // cache puro: o listener refaz
   let local = null;
@@ -15209,13 +15220,13 @@ window.__podeApagar = function (chave) {
 };
 /* Por que NÃO pode — para a tela explicar em vez de só recusar. */
 window.__porQueNaoApagar = function (chave) {
-  const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+  const mapa = window.__mapaSinc ? window.__mapaSinc() : ((typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {});
   if (!mapa[chave] && LS_CACHES.indexOf(chave) < 0) return 'só existe aqui';
   return 'ainda não confirmado na nuvem';
 };
 function __lsRecuperavel() {
   try {
-    const m = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+    const m = window.__mapaSinc ? window.__mapaSinc() : ((typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {});
     const base = new Set(Object.keys(m).concat(LS_CACHES));
     return base;
   } catch (e) { return new Set(LS_CACHES); }
@@ -15303,7 +15314,7 @@ window.__limpaRecuperaveis = function () {
 /* A prova final: relê do Firebase e só apaga o que realmente está lá. */
 window.__limpaConferindo = async function (alvos) {
   ctFechaDlg();
-  const mapa = (typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {};
+  const mapa = window.__mapaSinc ? window.__mapaSinc() : ((typeof FB_KEY_MAP !== 'undefined') ? FB_KEY_MAP : {});
   const apagadas = [], mantidas = [];
   for (const k of alvos) {
     const path = mapa[k];
@@ -23888,6 +23899,12 @@ async function fbBootstrap() {
       origSet.call(localStorage, lsKey, JSON.stringify(merged));
       if (reenviar.length && FB.saveKey) reenviar.slice(0, 400).forEach((k, i) => FB.saveKey('/sol_mods', k, merged[k], 300 + i * 25));
       console.log('[FB] Baixado e mesclado: /sol_mods —', reenviar.length, 'alteração(ões) local(is) mantida(s) e reenviada(s)');
+    } else if (fbPath === '/carteira_mes' && typeof window.__ctAplicaDoServidor === 'function') {
+      /* O planejamento junta, guarda (ou mantém na memória da página, se o
+         navegador estiver cheio — antes a chave local era APAGADA) e manda
+         ao servidor só os meses em que a cópia daqui era a mais nova. */
+      window.__ctAplicaDoServidor(serverVal);
+      console.log('[FB] Baixado e mesclado: /carteira_mes');
     } else if (serverVal !== null && serverVal !== undefined) {
       /* O servidor só passa por cima do que já tinha chegado nele. Se o que
          está aqui ainda não foi confirmado — a pessoa editou e recarregou
@@ -24064,12 +24081,18 @@ async function fbBootstrap() {
            ramo de baixo gravava [] e apagava o mês inteiro. Aqui cada parte
            (mês, ou forms) é comparada pelo seu próprio carimbo de hora e só
            entra se for mais nova que a daqui.                            */
-        const antes = (() => { try { return JSON.parse(localStorage.getItem(lsKey) || '{}') || {}; } catch (e) { return {}; } })();
-        const merged = _fbMergePorTs(antes, val, fbPath);
-        origSet.call(localStorage, lsKey, JSON.stringify(merged));
-        if (fbPath === '/tempos_peca' && typeof ctTemposMudou === 'function') ctTemposMudou();
-        if (typeof carteiraRender === 'function' && document.getElementById('carteiraView')) {
-          try { carteiraRender(); } catch (e) {}
+        if (fbPath === '/carteira_mes' && typeof window.__ctAplicaDoServidor === 'function') {
+          /* o planejamento guarda e redesenha por conta própria — e não
+             estoura aqui dentro se o navegador estiver sem espaço */
+          window.__ctAplicaDoServidor(val);
+        } else {
+          const antes = (() => { try { return JSON.parse(localStorage.getItem(lsKey) || '{}') || {}; } catch (e) { return {}; } })();
+          const merged = _fbMergePorTs(antes, val, fbPath);
+          origSet.call(localStorage, lsKey, JSON.stringify(merged));
+          if (fbPath === '/tempos_peca' && typeof ctTemposMudou === 'function') ctTemposMudou();
+          if (typeof carteiraRender === 'function' && document.getElementById('carteiraView')) {
+            try { carteiraRender(); } catch (e) {}
+          }
         }
       } else if (val === null || val === undefined) {
         /* Servidor vazio. Isso só quer dizer "alguém apagou" quando o que
@@ -24277,6 +24300,7 @@ async function fbReconnect() {
 
   // 3) Força upload de TUDO do localStorage pros caminhos do Firebase
   let sent = 0, failed = 0;
+  try { if (window.__ctEnviaTudo) { window.__ctEnviaTudo(); sent++; console.log('[FB] Resync: planejamento enviado por partes'); } } catch (e) {}
   for (const [key, fbPath] of Object.entries(FB_KEY_MAP)) {
     const raw = localStorage.getItem(key);
     if (!raw) continue;
@@ -26432,7 +26456,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 13/11/2026 10:27</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 13/11/2026 13:14</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
@@ -28300,17 +28324,116 @@ let ctBuscaCart = '', ctFabCart = '', ctSemMatCart = false;
 
 
 /* ── armazenamento ───────────────────────────────────────────────── */
+/* Quando o navegador recusa guardar por falta de espaço, a versão certa
+   fica aqui, na memória da página — senão a tela voltaria a mostrar o que
+   estava antes da edição, mesmo com o servidor já tendo recebido. */
+let _ctNaoGravado = null;
 function ctTudo() {
+  if (_ctNaoGravado) { try { return JSON.parse(_ctNaoGravado) || {}; } catch (e) {} }
   try { return JSON.parse(localStorage.getItem(CT_KEY) || '{}') || {}; } catch (e) { return {}; }
 }
+
+/* ─── Envio direto e por partes, como a programação ──────────────────
+   O planejamento subia só pelo espelho genérico: DEPOIS de conseguir
+   gravar no navegador, mandava o objeto inteiro — todos os meses e todas
+   as fotos guardadas — por cima do /carteira_mes. Se o navegador recusava
+   por falta de espaço, nada subia; e cada clique reenviava tudo.
+   Aqui ele faz o que a programação faz: compara com o que o servidor tem
+   e manda só o que mudou, mês a mês e campo a campo. E manda MESMO que o
+   navegador não tenha conseguido guardar — a programação não tem isso.
+   O espelho genérico continua existindo como reserva.
+
+   Um mês nunca é apagado por este envio: o planejamento não remove mês,
+   e um mês que falta aqui quer dizer "ainda não chegou", não "apagaram". */
+let _ctBase = null;        // { 'mês/campo': valor } — o que o servidor tem
+let _ctPendente = null;    // última versão que esperava conexão
+let _ctEspera = null;
+function _ctAchata(t) {
+  const m = {};
+  Object.keys(t || {}).forEach(mes => {
+    const d = t[mes];
+    if (d && typeof d === 'object' && !Array.isArray(d)) {
+      Object.keys(d).forEach(c => { if (d[c] !== undefined) m[mes + '/' + c] = d[c]; });
+    } else if (d !== undefined) m[mes] = d;
+  });
+  return m;
+}
+window.__ctDoServidor = function (serverVal) {
+  try { _ctBase = _ctAchata(serverVal || {}); } catch (e) {}
+};
+function _ctConectado() {
+  try { return typeof FB !== 'undefined' && !!FB.db && FB.isConnected && FB.isConnected(); } catch (e) { return false; }
+}
+function _ctEnvia(t) {
+  if (!_ctConectado()) {
+    _ctPendente = t;
+    if (!_ctEspera) _ctEspera = setInterval(() => {
+      if (!_ctConectado()) return;
+      clearInterval(_ctEspera); _ctEspera = null;
+      const p = _ctPendente; _ctPendente = null;
+      if (p) _ctEnvia(p);
+    }, 5000);
+    return;
+  }
+  const novo = _ctAchata(t), velho = _ctBase || {};
+  const upd = {};
+  Object.keys(novo).forEach(k => {
+    if (JSON.stringify(novo[k]) !== JSON.stringify(velho[k])) upd[k] = novo[k];
+  });
+  if (_ctBase) Object.keys(velho).forEach(k => {
+    const mes = k.split('/')[0];
+    if (!(k in novo) && t[mes] && typeof t[mes] === 'object') upd[k] = null;   // campo tirado de um mês que existe
+  });
+  if (!Object.keys(upd).length) return;
+  Promise.resolve(FB.db.ref('/carteira_mes').update(upd)).then(() => {
+    const b = Object.assign({}, _ctBase || {});
+    Object.keys(upd).forEach(k => { if (upd[k] === null) delete b[k]; else b[k] = upd[k]; });
+    _ctBase = b;
+    try { if (FB.marcaAck) FB.marcaAck('/carteira_mes', t); } catch (e) {}
+  }).catch(e => {
+    console.error('[planejamento] não chegou ao servidor:', e);
+    if (typeof toast === 'function') {
+      toast('⚠️ O planejamento não chegou ao servidor: ' + ((e && (e.code || e.message)) || e), 'error', 8000);
+    }
+  });
+}
+window.__ctEnviaAgora = () => { const p = _ctPendente; if (p) { _ctPendente = null; _ctEnvia(p); } };
+
+/* Chamado pelo listener do Firebase: junta o que veio com o que está aqui
+   (mês a mês, pelo carimbo de hora) e guarda. Se o navegador não tiver
+   espaço, guarda na memória da página em vez de estourar dentro do
+   listener — antes, esse erro interrompia o listener sem aviso. */
+window.__ctAplicaDoServidor = function (val) {
+  window.__ctDoServidor(val);
+  const merged = _fbMergePorTs(ctTudo(), val, '/carteira_mes');
+  const json = JSON.stringify(merged);
+  try {
+    Object.getPrototypeOf(localStorage).setItem.call(localStorage, CT_KEY, json);
+    _ctNaoGravado = null;
+  } catch (e) {
+    _ctNaoGravado = json;
+    console.warn('[planejamento] sem espaço para a cópia local — mantendo na memória da página');
+  }
+  if (typeof carteiraRender === 'function' && document.getElementById('carteiraView')) {
+    try { carteiraRender(); } catch (e) {}
+  }
+  /* Meses em que a cópia daqui era mais nova (editados offline, ou antes de
+     um F5) sobem agora. Os demais são iguais ao servidor e não geram envio,
+     então o eco não vira laço. */
+  try { _ctEnvia(merged); } catch (e) {}
+};
+/* "Reenviar tudo" do painel de sincronização. */
+window.__ctEnviaTudo = function () { _ctBase = null; _ctEnvia(ctTudo()); };
 /* O navegador dá ~5 MB para o app inteiro. Quando estoura, o setItem
    lança — e engolir esse erro era o pior cenário possível: a tela
    continuava mostrando o que você fez, mas nada tinha sido gravado.
    Agora o espaço é liberado jogando fora as fotos mais antigas da
    carteira, e se mesmo assim não couber, você é avisado.            */
 function ctGrava(t) {
-  const tenta = () => { localStorage.setItem(CT_KEY, JSON.stringify(t)); };
-  try { tenta(); return true; } catch (e) { if (!_ctSemEspaco(e)) { console.warn('[carteira]', e); return false; } }
+  /* Primeiro o servidor, independente do navegador conseguir guardar. */
+  try { _ctEnvia(JSON.parse(JSON.stringify(t))); } catch (e) { console.warn('[planejamento] envio', e); }
+  const tenta = () => { localStorage.setItem(CT_KEY, JSON.stringify(t)); _ctNaoGravado = null; };
+  try { tenta(); return true; } catch (e) { if (!_ctSemEspaco(e)) { console.warn('[carteira]', e); _ctNaoGravado = JSON.stringify(t); return false; } }
 
   /* 1ª tentativa: menos fotos guardadas, da mais velha para a mais nova. */
   for (let corte = 4; corte >= 0; corte--) {
@@ -28325,14 +28448,13 @@ function ctGrava(t) {
   }
 
   /* 2ª: o resto do app também ocupa espaço — avisa em vez de perder. */
-  console.error('[carteira] localStorage cheio, não gravou');
-  if (typeof ctAviso === 'function') {
-    ctAviso('⚠ Não consegui gravar — memória do navegador cheia',
-      'O navegador reserva cerca de 5 MB para o app e esse limite foi atingido, então '
-      + '<b>esta alteração não foi salva</b>.<br><br>Já apaguei as versões antigas do planejamento para '
-      + 'abrir espaço e ainda não coube. O que ocupa mais é o histórico local de outros módulos. '
-      + 'Para liberar: feche e reabra o app (ele recarrega os dados da nuvem) ou limpe os dados '
-      + 'do site nas configurações do navegador — nada se perde, tudo está no Firebase.');
+  console.error('[carteira] localStorage cheio — guardando na memória da página');
+  _ctNaoGravado = JSON.stringify(t);
+  try { if (window.__memVigia) window.__memVigia(); } catch (e) {}
+  if (typeof toast === 'function') {
+    toast('⚠️ Este navegador está sem espaço. O planejamento foi enviado direto ao servidor '
+      + '(ou vai assim que a conexão voltar), mas este navegador não guardou a cópia dele. '
+      + 'Clique no 🧹 no topo para liberar memória.', 'error', 10000);
   }
   return false;
 }
