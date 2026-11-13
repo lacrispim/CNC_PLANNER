@@ -15148,6 +15148,37 @@ window.__faxinaAuto = function (exceto) {
 window.__agendaRecarga = function () {
   if (!window.__precisaRecarregar || window.__recargaMarcada) return;
   window.__recargaMarcada = true;
+  /* Recarregar sozinho é socorro, nunca rotina. `__recargaMarcada` só vale
+     dentro desta página, e cada recarga cria uma página nova — então, sozinho,
+     ele não impede o ciclo. Num navegador cheio a conta se repete em todo
+     carregamento: faltou espaço → faxina → recarregou → voltou cheio da nuvem
+     → faltou espaço. Era isso que fazia o app reiniciar sem parar.
+     O carimbo no sessionStorage atravessa as recargas da MESMA aba: socorre
+     uma vez e, depois disso, mostra o aviso em vez de recarregar de novo. E se
+     nem o carimbo couber, não recarrega — sem poder garantir que não repete,
+     ficar parado é melhor do que entrar em laço. */
+  const AGORA = Date.now(), JANELA = 10 * 60 * 1000, CARIMBO = 'cnc_recarga_auto';
+  const aviso = () => {
+    try { if (window.__memVigia) window.__memVigia(); } catch (e) {}
+    if (typeof toast === 'function') {
+      toast('A memória deste navegador está cheia. Clique no 🧹 no topo para liberar.', 'error', 9000);
+    }
+  };
+  let ultima = 0;
+  try { ultima = parseInt(sessionStorage.getItem(CARIMBO) || '0', 10) || 0; } catch (e) {}
+  if (AGORA - ultima < JANELA) {
+    console.warn('[espaço] já recarreguei há pouco nesta aba — não recarrego de novo');
+    aviso();
+    return;
+  }
+  let anotou = false;
+  try { sessionStorage.setItem(CARIMBO, String(AGORA));
+        anotou = sessionStorage.getItem(CARIMBO) === String(AGORA); } catch (e) { anotou = false; }
+  if (!anotou) {
+    console.warn('[espaço] não consegui anotar a recarga — não vou recarregar para não entrar em laço');
+    aviso();
+    return;
+  }
   const msg = '🧹 Liberei memória do navegador. Recarregando para repor os dados da nuvem…';
   if (typeof toast === 'function') toast(msg, 'info', 6000);
   setTimeout(() => location.reload(), 2500);
@@ -16785,8 +16816,13 @@ setTimeout(_updateUserNameUI, 200);
    entradas em 785 solicitações, média de 4,5 — quase nenhuma passaria
    de 10. O que ocupa é o acúmulo de coisa ANTIGA. Então a regra é dupla:
    fica no navegador o que é recente E pouco; o resto vive na nuvem.  */
-const HIST_LOCAL = 5;
-const HIST_DIAS = 45;
+/* 13/11, a pedido: fica no navegador SÓ a última edição de cada
+   solicitação. Os valores (status, quantidade, material…) não são
+   histórico e não mudam; o que deixa de ser guardado é o registro de
+   quem mudou o quê antes da última alteração. Era isso que enchia a
+   memória — 202 bytes por entrada, milhares de entradas. */
+const HIST_LOCAL = 1;
+const HIST_DIAS = 45;   // não usado mais; mantido por compatibilidade
 const HIST_FILA_KEY = 'cnc_sol_hist_fila_v1';   // entradas que ainda não subiram
 
 function _addHistory(rec, field, fieldLabel, oldValue, newValue, note) {
@@ -16803,8 +16839,6 @@ function _addHistory(rec, field, fieldLabel, oldValue, newValue, note) {
     note: String(note||'')
   };
   rec.history.push(ent);
-  _histEnfileira(rec.id, ent);
-  /* O corte vem DEPOIS de enfileirar: nada sai daqui sem ter para onde ir. */
   rec.history = _histRecorte(rec.history);
 }
 
@@ -16812,12 +16846,7 @@ function _addHistory(rec, field, fieldLabel, oldValue, newValue, note) {
    HIST_DIAS dias. Um forms mexido uma vez em março não guarda nada aqui. */
 function _histRecorte(lista) {
   if (!Array.isArray(lista) || !lista.length) return lista || [];
-  const limite = Date.now() - HIST_DIAS * 86400000;
-  const recentes = lista.filter(h => {
-    const t = Date.parse(h && h.ts);
-    return Number.isFinite(t) && t >= limite;
-  });
-  return recentes.slice(-HIST_LOCAL);
+  return lista.slice(-HIST_LOCAL);
 }
 window._histRecorte = _histRecorte;
 
@@ -16880,65 +16909,37 @@ function _histCompleto(id) {
    a entrada ter para onde ir. Se a nuvem estiver fora, a fila espera e a
    próxima abertura retoma; nada é perdido no caminho.                */
 const HIST_MIG_KEY = 'cnc_sol_hist_migrado_v1';
+/* Corta o histórico de cada solicitação para a última edição.
+   Roda em TODO carregamento, não uma vez só: outro navegador que ainda não
+   recebeu esta versão pode devolver, pelo Firebase, um histórico longo — e
+   aqui ele é cortado de novo. Só grava se de fato cortou alguma coisa.
+   A fila da versão anterior (subida para /sol_hist) deixou de existir: era
+   só local, a faxina não podia apagá-la, e crescia quando o servidor
+   recusava o caminho. */
 function _histMigra() {
   try {
-    if (localStorage.getItem(HIST_MIG_KEY)) return;
-    /* Não começa um lote novo enquanto o anterior não chegou ao servidor.
-       Sem isso, se o caminho /sol_hist não for gravável (regra do Firebase,
-       por exemplo), cada carregamento empilhava mais 400 entradas numa fila
-       que é só local e que a faxina não pode apagar: a memória CRESCIA em vez
-       de diminuir, justamente o contrário do que esta migração existe para
-       fazer. Com a espera, a fila para em um lote e o histórico fica onde
-       está — a migração não avança, mas também não estraga nada. */
-    const _faltando = _histFila().length;
-    if (_faltando) {
-      console.log('[hist] ' + _faltando + ' entrada(s) ainda não confirmadas no servidor — '
-        + 'migração em espera (se não sair, confira se /sol_hist é gravável nas regras)');
-      return;
-    }
+    try { localStorage.removeItem(HIST_FILA_KEY); } catch (e) {}
     const m = _loadMods();
-    const ids = Object.keys(m);
-    let entradas = 0, mexidos = 0, antes = (localStorage.getItem(SOL_MODS_KEY) || '').length;
-    const fila = _histFila();
-    /* Em lotes: a fila é o único lugar dessas entradas até o servidor
-       confirmar, e uma fila gigante não cabe no navegador apertado.
-       O que ficar para trás é migrado na próxima rodada.             */
-    const TETO = 400;
-    let faltou = false;
-    for (const id of ids) {
+    const antes = (localStorage.getItem(SOL_MODS_KEY) || '').length;
+    let mexidos = 0;
+    Object.keys(m).forEach(id => {
       const h = m[id] && m[id].history;
-      if (!Array.isArray(h) || !h.length) continue;
-      const fica = _histRecorte(h);
-      if (fica.length === h.length) continue;      // já está pequeno: não mexe
-      if (entradas + h.length > TETO && entradas > 0) { faltou = true; break; }
-      h.forEach(e => { fila.push({ id: String(id), e: e }); entradas++; });
-      m[id].history = fica;
-      mexidos++;
-    }
-    if (!mexidos) { localStorage.setItem(HIST_MIG_KEY, '1'); return; }
-    _histGravaFila(fila);
+      if (Array.isArray(h) && h.length > HIST_LOCAL) { m[id].history = h.slice(-HIST_LOCAL); mexidos++; }
+    });
+    if (!mexidos) return 0;
     _saveMods(m);
-    /* Repõe o recorte nos registros já carregados na memória da página. */
     try { if (typeof data !== 'undefined' && Array.isArray(data))
       data.forEach(r => { if (m[r.id] && Array.isArray(m[r.id].history)) r.history = m[r.id].history; }); } catch (e) {}
     const depois = (localStorage.getItem(SOL_MODS_KEY) || '').length;
-    if (!faltou) localStorage.setItem(HIST_MIG_KEY, '1');
-    console.log('[hist] ' + entradas + ' entradas de ' + mexidos + ' solicitações foram para a nuvem — '
-      + Math.round((antes - depois) / 1024) + ' KB liberados'
-      + (faltou ? ' (ainda falta: continua quando a fila esvaziar)' : ''));
-    _histSobe();
-    /* Só continua depois que o servidor confirmar o lote — assim a fila
-       nunca cresce além do que o navegador aguenta.                  */
-    if (faltou) {
-      const esperar = setInterval(() => {
-        if (_histFila().length) return;
-        clearInterval(esperar);
-        _histMigra();
-      }, 3000);
-    }
-  } catch (e) { console.warn('[hist] migração', e); }
+    console.log('[hist] ficou só a última edição em ' + mexidos + ' solicitação(ões) — '
+      + Math.round((antes - depois) / 1024) + ' KB liberados');
+    return mexidos;
+  } catch (e) { console.warn('[hist] corte', e); return 0; }
 }
 window._histMigra = _histMigra;
+/* E também sem esperar o Firebase: num navegador cheio o bootstrap pode nem
+   terminar, e é justamente aí que este corte mais ajuda. */
+setTimeout(() => { try { _histMigra(); } catch (e) {} }, 3000);
 window._histSobe = _histSobe;
 window._histCompleto = _histCompleto;
 window._histFila = _histFila;
@@ -16978,9 +16979,7 @@ function renderHistory(r, completo) {
 
 function _histBotaoMais(r, completo) {
   if (completo) return '<div class="sol-hist-empty">Histórico completo, da nuvem.</div>';
-  return '<div class="sol-hist-mais"><button onclick="__histVerTudo(\'' + String(r.id).replace(/'/g, "\\'")
-    + '\')">Ver histórico completo</button>'
-    + '<span>aqui ficam só as alterações recentes; o restante está na nuvem</span></div>';
+  return '<div class="sol-hist-empty">Mostrando só a última alteração.</div>';
 }
 
 window.__histVerTudo = function (id) {
@@ -24125,9 +24124,8 @@ async function fbBootstrap() {
      reenviar cópia velha por cima do servidor. */
   window.__fbBootstrapPronto = true;
   console.log('[FB] Bootstrap completo. Listeners ativos.');
-  /* O histórico antigo sai do navegador assim que há para onde mandá-lo. */
+  /* Depois do download: corta o que tiver chegado longo de outro navegador. */
   try { if (typeof _histMigra === 'function') _histMigra(); } catch (e) {}
-  try { if (typeof _histSobe === 'function') setInterval(_histSobe, 20000); } catch (e) {}
 
   /* Faxina preventiva: com o armário acima de 70%, apara só o histórico
      (fotos antigas da carteira e meses de mais de 18 meses). Nunca mexe
@@ -26434,7 +26432,7 @@ window.M3D = (function () {
 <!-- Marca de versão: mostra quando este arquivo foi gerado, pra saber se o navegador
      está mostrando a versão nova ou uma antiga em cache. -->
 <div id="appVersao" title="Versão do arquivo publicado. Se não bater com a última enviada, dê Ctrl+Shift+R."
-  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 13/11/2026 09:42</div>
+  style="position:fixed;left:8px;bottom:6px;z-index:99998;font-size:10px;color:var(--tx3);font-family:ui-monospace,Consolas,monospace;background:rgba(255,255,255,.75);padding:2px 7px;border-radius:4px;pointer-events:auto;user-select:none">versão 13/11/2026 10:27</div>
 <style>
 /* ═══ MÓDULO NOTAS E ENTREGAS ═══
    Tudo prefixado com .ne- e preso ao .ne-shell, para não vazar nada
